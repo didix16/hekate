@@ -30,15 +30,16 @@
 #define WINDOW_D 3
 
 /*! Display registers. */
-#define _DIREG(reg) ((reg) * 4)
+// All Display/DSI/MIPI register defines and macros are index based (not offset).
+// DC_CMD/DC_COM/WINC Non-shadowed. DC_DISP/DC_WIN/DC_WINBUF Shadowed.
 
 // Display controller scratch registers.
 #define DC_D_WINBUF_DD_SCRATCH_REGISTER_0 0xED
 #define DC_D_WINBUF_DD_SCRATCH_REGISTER_1 0xEE
 #define DC_T_WINBUF_TD_SCRATCH_REGISTER_0 0x16D
 #define DC_T_WINBUF_TD_SCRATCH_REGISTER_1 0x16E
-#define DC_COM_SCRATCH_REGISTER_A 0x325
-#define DC_COM_SCRATCH_REGISTER_B 0x326
+#define DC_COM_SCRATCH_REGISTER_A         0x325
+#define DC_COM_SCRATCH_REGISTER_B         0x326
 #define DC_A_WINBUF_AD_SCRATCH_REGISTER_0 0xBED
 #define DC_A_WINBUF_AD_SCRATCH_REGISTER_1 0xBEE
 #define DC_B_WINBUF_BD_SCRATCH_REGISTER_0 0xDED
@@ -280,8 +281,8 @@
 #define DC_DISP_CURSOR_BACKGROUND    0x43D
 #define  CURSOR_COLOR(r,g,b) (((r) & 0xFF) | (((g) & 0xFF) << 8) | (((b) & 0xFF) << 16))
 
-#define DC_DISP_CURSOR_START_ADDR    0x43E
-#define DC_DISP_CURSOR_START_ADDR_NS 0x43F
+#define DC_DISP_CURSOR_START_ADDR       0x43E
+#define DC_DISP_CURSOR_START_ADDR_NS    0x43F
 #define  CURSOR_CLIPPING(w) ((w) << 28)
 #define   CURSOR_CLIP_WIN_A 1
 #define   CURSOR_CLIP_WIN_B 2
@@ -290,11 +291,10 @@
 #define  CURSOR_SIZE_64  (1 << 24)
 #define  CURSOR_SIZE_128 (2 << 24)
 #define  CURSOR_SIZE_256 (3 << 24)
-#define DC_DISP_CURSOR_POSITION      0x440
-#define DC_DISP_BLEND_BACKGROUND_COLOR 0x4E4
-#define DC_DISP_CURSOR_START_ADDR_HI 0x4EC
+#define DC_DISP_CURSOR_POSITION         0x440
+#define DC_DISP_CURSOR_START_ADDR_HI    0x4EC
 #define DC_DISP_CURSOR_START_ADDR_HI_NS 0x4ED
-#define DC_DISP_BLEND_CURSOR_CONTROL 0x4F1
+#define DC_DISP_BLEND_CURSOR_CONTROL    0x4F1
 #define  CURSOR_BLEND_2BIT     (0 << 24)
 #define  CURSOR_BLEND_R8G8B8A8 (1 << 24)
 #define  CURSOR_BLEND_SRC_FACTOR(n) ((n) << 8)
@@ -304,10 +304,13 @@
 #define   CURSOR_BLEND_NK1 2
 // End of cursor cfg regs.
 
-#define DC_DISP_DC_MCCIF_FIFOCTRL 0x480
-#define DC_DISP_SD_BL_PARAMETERS 0x4D7
-#define DC_DISP_SD_BL_CONTROL 0x4DC
+#define DC_DISP_DC_MCCIF_FIFOCTRL      0x480
+#define DC_DISP_SD_BL_PARAMETERS       0x4D7
+#define DC_DISP_SD_BL_CONTROL          0x4DC
 #define DC_DISP_BLEND_BACKGROUND_COLOR 0x4E4
+
+#define DC_DISP_DISPLAY_SPARE0         0x4F7 // Used by SW/HW.
+#define DC_DISP_DISPLAY_SPARE1         0x4F8
 
 #define DC_WINC_COLOR_PALETTE 0x500
 #define  COLOR_PALETTE_IDX(off) (DC_WINC_COLOR_PALETTE + (off))
@@ -466,9 +469,10 @@
 
 #define DC_WINBUF_MEMFETCH_CONTROL 0x82B
 
-/*! Display serial interface registers. */
-#define _DSIREG(reg) ((reg) * 4)
+/* Scratch register to store DCS backlight level (custom). */
+#define DC_DCS_BACKLIGHT_LEVEL DC_COM_SCRATCH_REGISTER_B
 
+/*! Display serial interface registers. */
 #define DSI_INCR_SYNCPT_CNTRL 0x1
 #define  DSI_INCR_SYNCPT_SOFT_RESET BIT(0)
 #define  DSI_INCR_SYNCPT_NO_STALL   BIT(8)
@@ -730,7 +734,7 @@
 #define MIPI_DCS_PRIV_UNK_D9            0xD9
 #define MIPI_DCS_PRIV_SM_DISPLAY_ID     0xDD
 											 //                          LVL1 LVL2 LVL3 UNK0 UNK1
-#define MIPI_DCS_PRIV_SM_SET_REGS_LOCK  0xE2 // Samsung: Lock (default): 5A5A A5A5 A5A5 A500 A500. Unlock: A5A5 5A5A 5A5A UNK UNK.
+#define MIPI_DCS_PRIV_SM_SET_REGS_LOCK  0xE2 // Samsung: Lock (default): 5A5A A5A5 A5A5 A500 A500. Lock/Unlock: A5/5A. LVL1 group is normal registers.
 #define MIPI_DCS_PRIV_READ_EXTC_CMD_SPI 0xFE // Read EXTC Command In SPI. 1 byte. 0-6: EXT_SPI_CNT, 7:EXT_SP.
 #define MIPI_DCS_PRIV_SET_EXTC_CMD_REG  0xFF // EXTC Command Set enable register. 5 bytes. Pass: FF 98 06 04, PAGE.
 
@@ -842,8 +846,8 @@
 enum
 {
 	PANEL_JDI_XXX062M     = 0x10,
-	PANEL_JDI_LAM062M109A = 0x0910,
-	PANEL_JDI_LPM062M326A = 0x2610,
+	PANEL_JDI_LAM062M109A = 0x0910, // SI.
+	PANEL_JDI_LPM062M326A = 0x2610, // LTPS.
 	PANEL_INL_P062CCA_AZ1 = 0x0F20,
 	PANEL_AUO_A062TAN01   = 0x0F30,
 	PANEL_INL_2J055IA_27A = 0x1020,
@@ -851,12 +855,14 @@ enum
 	PANEL_SHP_LQ055T1SW10 = 0x1040,
 	PANEL_SAM_AMS699VC01  = 0x2050,
 
-	// Found on 6/2" clones. Unknown markings. Quality seems JDI like. Has bad low backlight scaling. ID: [83] 94 [0F].
+	// Found on 6/2" clones. Unknown markings. Clone of AUO A062TAN01.
+	// Quality seems JDI like. Has bad low backlight scaling. ID: [83] 94 [0F]. Sometimes reports [30] 94 [0F]. Both IDs have correct CRC16.
 	PANEL_OEM_CLONE_6_2   = 0x0F83,
 	// Found on 5.5" clones with AUO A055TAN02 (59.05A30.001) fake markings.
 	PANEL_OEM_CLONE_5_5   = 0x00B3,
 	// Found on 5.5" clones with AUO A055TAN02 (59.05A30.001) fake markings.
 	PANEL_OEM_CLONE       = 0x0000
+	//0x0F40 [40] 94 [0F], 5.5" clone
 };
 
 void display_init();
@@ -869,6 +875,7 @@ void display_disable_interrupt(u32 intr);
 void display_wait_interrupt(u32 intr);
 
 /*! Get/Set Display panel ID. */
+u32  display_get_verbose_panel_id();
 u16  display_get_decoded_panel_id();
 void display_set_decoded_panel_id(u32 id);
 
@@ -881,10 +888,9 @@ void display_dsi_vblank_write(u8 cmd, u32 len, void *data);
 /*! Show one single color on the display. */
 void display_color_screen(u32 color);
 
-/*! Switches screen backlight ON/OFF. */
+/*! Screen backlight ON/OFF or set via duty and fading. */
 void display_backlight(bool enable);
 void display_backlight_brightness(u32 brightness, u32 step_delay);
-u32  display_get_backlight_brightness();
 
 u32 *display_init_window_a_pitch();
 u32 *display_init_window_a_pitch_vic();

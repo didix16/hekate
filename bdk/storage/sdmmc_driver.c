@@ -17,7 +17,7 @@
 
 #include <string.h>
 
-#include <storage/mmc.h>
+#include <storage/mmc_def.h>
 #include <storage/sdmmc.h>
 #include <gfx_utils.h>
 #include <power/max7762x.h>
@@ -115,7 +115,7 @@ static int _sdmmc_config_tap_val(sdmmc_t *sdmmc, u32 type)
 	u32 tap_val = 0;
 
 	if (type == SDHCI_TIMING_MMC_HS400)
-		sdmmc->regs->vencapover = (sdmmc->regs->vencapover & 0xFFFFC0FF) | (dqs_trim_val << 8);
+		sdmmc->regs->vencapover = (sdmmc->regs->vencapover & ~0x3F00) | (dqs_trim_val << 8);
 
 	sdmmc->regs->ventunctl0 &= ~SDHCI_TEGRA_TUNING_TAP_HW_UPDATED;
 
@@ -129,7 +129,7 @@ static int _sdmmc_config_tap_val(sdmmc_t *sdmmc, u32 type)
 	else
 		tap_val = sdmmc->t210b01 ? 11 : tap_values_t210[sdmmc->id];
 
-	sdmmc->regs->venclkctl = (sdmmc->regs->venclkctl & 0xFF00FFFF) | (tap_val << 16);
+	sdmmc->regs->venclkctl = (sdmmc->regs->venclkctl & ~0xFF0000) | (tap_val << 16);
 
 	return 1;
 }
@@ -144,16 +144,16 @@ static void _sdmmc_pad_config_fallback(sdmmc_t *sdmmc, u32 power)
 	_sdmmc_commit_changes(sdmmc);
 	switch (sdmmc->id)
 	{
-	case SDMMC_1: // 33 Ohm 2X Driver.
+	case SDMMC_1: // 50 Ohm 2X Driver.
 		if (power == SDMMC_POWER_OFF)
 			break;
 		u32 sdmmc1_pad_cfg = APB_MISC(APB_MISC_GP_SDMMC1_PAD_CFGPADCTRL) & 0xF8080FFF;
 		if (sdmmc->t210b01)
-			sdmmc1_pad_cfg |= (0x808 << 12); // Up:  8, Dn:  8. For 33 ohm.
+			sdmmc1_pad_cfg |= (0x808 << 12); // Up:  8, Dn:  8. For 50 ohm.
 		else if (power == SDMMC_POWER_1_8)
-			sdmmc1_pad_cfg |= (0xB0F << 12); // Up: 11, Dn: 15. For 33 ohm.
+			sdmmc1_pad_cfg |= (0xB0F << 12); // Up: 11, Dn: 15. For 50 ohm.
 		else if (power == SDMMC_POWER_3_3)
-			sdmmc1_pad_cfg |= (0xC0C << 12); // Up: 12, Dn: 12. For 33 ohm.
+			sdmmc1_pad_cfg |= (0xC0C << 12); // Up: 12, Dn: 12. For 50 ohm.
 		APB_MISC(APB_MISC_GP_SDMMC1_PAD_CFGPADCTRL) = sdmmc1_pad_cfg;
 		(void)APB_MISC(APB_MISC_GP_SDMMC1_PAD_CFGPADCTRL); // Commit write.
 		break;
@@ -437,8 +437,8 @@ static int _sdmmc_cache_rsp(sdmmc_t *sdmmc, u32 *rsp, u32 type)
 	{
 	case SDMMC_RSP_TYPE_1:
 	case SDMMC_RSP_TYPE_3:
-	case SDMMC_RSP_TYPE_4:
-	case SDMMC_RSP_TYPE_5:
+	case SDMMC_RSP_TYPE_6:
+	case SDMMC_RSP_TYPE_7:
 		rsp[0] = sdmmc->regs->rspreg[0];
 		break;
 
@@ -470,8 +470,8 @@ int sdmmc_get_cached_rsp(sdmmc_t *sdmmc, u32 *rsp, u32 type)
 	{
 	case SDMMC_RSP_TYPE_1:
 	case SDMMC_RSP_TYPE_3:
-	case SDMMC_RSP_TYPE_4:
-	case SDMMC_RSP_TYPE_5:
+	case SDMMC_RSP_TYPE_6:
+	case SDMMC_RSP_TYPE_7:
 		rsp[0] = sdmmc->rsp[0];
 		break;
 
@@ -560,8 +560,8 @@ static int _sdmmc_send_cmd(sdmmc_t *sdmmc, const sdmmc_cmd_t *cmd, bool is_data_
 		break;
 
 	case SDMMC_RSP_TYPE_1:
-	case SDMMC_RSP_TYPE_4:
-	case SDMMC_RSP_TYPE_5:
+	case SDMMC_RSP_TYPE_6:
+	case SDMMC_RSP_TYPE_7:
 		if (cmd->check_busy)
 			cmdflags = SDHCI_CMD_RESP_LEN48_BUSY | SDHCI_CMD_INDEX | SDHCI_CMD_CRC;
 		else
@@ -1008,8 +1008,8 @@ static int _sdmmc_config_sdma(sdmmc_t *sdmmc, u32 *blkcnt_out, const sdmmc_req_t
 		return 0;
 
 	u32 blkcnt = req->num_sectors;
-	if (blkcnt >= 0xFFFF)
-		blkcnt = 0xFFFF;
+	if (blkcnt >= SDMMC_HMAX_BLOCKNUM)
+		blkcnt = SDMMC_HMAX_BLOCKNUM;
 	u32 admaaddr = (u32)req->buf;
 
 	// Check alignment.
@@ -1372,7 +1372,7 @@ int sdmmc_init(sdmmc_t *sdmmc, u32 id, u32 power, u32 bus_width, u32 type)
 	}
 
 	// Disable clock if enabled.
-	if (clock_sdmmc_is_not_reset_and_enabled(id))
+	if (clock_sdmmc_is_active(id))
 	{
 		_sdmmc_card_clock_disable(sdmmc);
 		_sdmmc_commit_changes(sdmmc);

@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018 naehrwert
- * Copyright (c) 2018-2025 CTCaer
+ * Copyright (c) 2018-2026 CTCaer
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -31,23 +31,12 @@
 //#define DPRINTF(...) gfx_printf(__VA_ARGS__)
 #define DPRINTF(...)
 
-extern hekate_config h_cfg;
 extern const u8 package2_keyseed[];
 
 u32 pkg2_newkern_ini1_info;
 u32 pkg2_newkern_ini1_start;
 u32 pkg2_newkern_ini1_end;
 u32 pkg2_newkern_ini1_rela;
-
-enum kip_offset_section
-{
-	KIP_TEXT    = 0,
-	KIP_RODATA  = 1,
-	KIP_DATA    = 2,
-	KIP_BSS     = 3,
-	KIP_UNKSEC1 = 4,
-	KIP_UNKSEC2 = 5
-};
 
 #define KIP_PATCH_SECTION_SHIFT  (29)
 #define KIP_PATCH_SECTION_MASK   (7 << KIP_PATCH_SECTION_SHIFT)
@@ -555,7 +544,7 @@ const char *pkg2_patch_kips(link_t *info, char *patch_names)
 
 			// Check if current KIP not hashed and hash it.
 			if (kip_hash[0] == 0)
-				if (!se_calc_sha256_oneshot(kip_hash, ki->kip1, ki->size))
+				if (!se_sha_hash_256_oneshot(kip_hash, ki->kip1, ki->size))
 					memset(kip_hash, 0, sizeof(kip_hash));
 
 			// Check if kip is the expected version.
@@ -686,6 +675,10 @@ const char *pkg2_patch_kips(link_t *info, char *patch_names)
 			return patches[i];
 	}
 
+	// Check if emuMMC was applied.
+	if (emummc_patch_selected)
+		return "emummc";
+
 	return NULL;
 }
 
@@ -694,7 +687,7 @@ static const u8 mkey_vector_7xx[SE_KEY_128_SIZE] =
 	{ 0xEA, 0x60, 0xB3, 0xEA, 0xCE, 0x8F, 0x24, 0x46, 0x7D, 0x33, 0x9C, 0xD1, 0xBC, 0x24, 0x98, 0x29 };
 
 u8 pkg2_keyslot;
-pkg2_hdr_t *pkg2_decrypt(void *data, u8 kb, bool is_exo)
+pkg2_hdr_t *pkg2_decrypt(void *data, u8 mkey, bool is_exo)
 {
 	u8 *pdata = (u8 *)data;
 
@@ -710,12 +703,12 @@ pkg2_hdr_t *pkg2_decrypt(void *data, u8 kb, bool is_exo)
 	pkg2_keyslot = 8;
 
 	// Decrypt 7.0.0 pkg2 via 8.1.0 mkey on Erista.
-	if (!h_cfg.t210b01 && kb == HOS_KB_VERSION_700)
+	if (!h_cfg.t210b01 && mkey == HOS_MKEY_VER_700)
 	{
 		u8 tmp_mkey[SE_KEY_128_SIZE];
 
 		// Decrypt 7.0.0 encrypted mkey.
-		se_aes_crypt_ecb(!is_exo ? 7 : 13, DECRYPT, tmp_mkey, SE_KEY_128_SIZE, mkey_vector_7xx, SE_KEY_128_SIZE);
+		se_aes_crypt_ecb(!is_exo ? 7 : 13, DECRYPT, tmp_mkey, mkey_vector_7xx, SE_KEY_128_SIZE);
 
 		// Set and unwrap pkg2 key.
 		se_aes_key_set(9, tmp_mkey, SE_KEY_128_SIZE);
@@ -725,7 +718,7 @@ pkg2_hdr_t *pkg2_decrypt(void *data, u8 kb, bool is_exo)
 	}
 
 	// Decrypt header.
-	se_aes_crypt_ctr(pkg2_keyslot, hdr, sizeof(pkg2_hdr_t), hdr, sizeof(pkg2_hdr_t), hdr);
+	se_aes_crypt_ctr(pkg2_keyslot, hdr, hdr, sizeof(pkg2_hdr_t), hdr);
 
 	if (hdr->magic != PKG2_MAGIC)
 		return NULL;
@@ -737,7 +730,7 @@ DPRINTF("sec %d has size %08X\n", i, hdr->sec_size[i]);
 		if (!hdr->sec_size[i])
 			continue;
 
-		se_aes_crypt_ctr(pkg2_keyslot, pdata, hdr->sec_size[i], pdata, hdr->sec_size[i], &hdr->sec_ctr[i * SE_AES_IV_SIZE]);
+		se_aes_crypt_ctr(pkg2_keyslot, pdata, pdata, hdr->sec_size[i], hdr->sec_ctr[i]);
 
 		pdata += hdr->sec_size[i];
 	}
@@ -783,7 +776,7 @@ DPRINTF("adding kip1 '%s' @ %08X (%08X)\n", (char *)ki->kip1->name, (u32)ki->kip
 	{
 		hdr->sec_size[PKG2_SEC_INI1] = ini1_size;
 		hdr->sec_off[PKG2_SEC_INI1] = 0x14080000;
-		se_aes_crypt_ctr(8, ini1, ini1_size, ini1, ini1_size, &hdr->sec_ctr[PKG2_SEC_INI1 * SE_AES_IV_SIZE]);
+		se_aes_crypt_ctr(8, ini1, ini1, ini1_size, hdr->sec_ctr[PKG2_SEC_INI1]);
 	}
 	else
 	{
@@ -799,7 +792,7 @@ void pkg2_build_encrypt(void *dst, void *hos_ctxt, link_t *kips_info, bool is_ex
 	launch_ctxt_t *ctxt = (launch_ctxt_t *)hos_ctxt;
 	u32 meso_magic = *(u32 *)(ctxt->kernel + 4);
 	u32 kernel_size = ctxt->kernel_size;
-	u8 kb = ctxt->pkg1_id->kb;
+	u8 mkey = ctxt->pkg1_id->mkey;
 	u8 *pdst = (u8 *)dst;
 
 	// Force new Package2 if Mesosphere.
@@ -808,10 +801,10 @@ void pkg2_build_encrypt(void *dst, void *hos_ctxt, link_t *kips_info, bool is_ex
 		ctxt->new_pkg2 = true;
 
 	// Set key version. For Erista 7.0.0, use 8.1.0 because of a bug in Exo2?
-	u8 key_ver = kb ? kb + 1 : 0;
+	u8 key_ver = mkey ? mkey + 1 : 0;
 	if (pkg2_keyslot == 9)
 	{
-		key_ver = HOS_KB_VERSION_810 + 1;
+		key_ver = HOS_MKEY_VER_810 + 1;
 		pkg2_keyslot = 8;
 	}
 
@@ -861,7 +854,7 @@ DPRINTF("%s @ %08X (%08X)\n", is_meso ? "Mesosphere": "kernel",(u32)ctxt->kernel
 		kernel_size += ini1_size;
 	}
 	hdr->sec_size[PKG2_SEC_KERNEL] = kernel_size;
-	se_aes_crypt_ctr(pkg2_keyslot, pdst, kernel_size, pdst, kernel_size, &hdr->sec_ctr[PKG2_SEC_KERNEL * SE_AES_IV_SIZE]);
+	se_aes_crypt_ctr(pkg2_keyslot, pdst, pdst, kernel_size, hdr->sec_ctr[PKG2_SEC_KERNEL]);
 	pdst += kernel_size;
 DPRINTF("kernel encrypted\n");
 
@@ -877,7 +870,7 @@ DPRINTF("INI1 encrypted\n");
 		u8 *pk2_hash_data = (u8 *)dst + 0x100 + sizeof(pkg2_hdr_t);
 		for (u32 i = PKG2_SEC_KERNEL; i <= PKG2_SEC_UNUSED; i++)
 		{
-			se_calc_sha256_oneshot(&hdr->sec_sha256[SE_SHA_256_SIZE * i], (void *)pk2_hash_data, hdr->sec_size[i]);
+			se_sha_hash_256_oneshot(hdr->sec_sha256[i], (void *)pk2_hash_data, hdr->sec_size[i]);
 			pk2_hash_data += hdr->sec_size[i];
 		}
 	}
@@ -885,7 +878,7 @@ DPRINTF("INI1 encrypted\n");
 	// Encrypt header.
 	*(u32 *)hdr->ctr = 0x100 + sizeof(pkg2_hdr_t) + kernel_size + ini1_size;
 	hdr->ctr[4] = key_ver;
-	se_aes_crypt_ctr(pkg2_keyslot, hdr, sizeof(pkg2_hdr_t), hdr, sizeof(pkg2_hdr_t), hdr);
+	se_aes_crypt_ctr(pkg2_keyslot, hdr, hdr, sizeof(pkg2_hdr_t), hdr);
 	memset(hdr->ctr, 0 , SE_AES_IV_SIZE);
 	*(u32 *)hdr->ctr = 0x100 + sizeof(pkg2_hdr_t) + kernel_size + ini1_size;
 	hdr->ctr[4] = key_ver;

@@ -1,7 +1,7 @@
 /*
  * L4T Loader for Tegra X1
  *
- * Copyright (c) 2020-2025 CTCaer
+ * Copyright (c) 2020-2026 CTCaer
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -172,7 +172,6 @@
 // Misc.
 #define DTB_MAGIC             0xEDFE0DD0 // D00DFEED.
 #define FALCON_DMA_PAGE_SIZE  0x100
-#define ACR_GSC3_ENABLE_MAGIC 0xC0EDBBCC
 #define SOC_ID_T210           0x210
 #define SOC_ID_T210B01        0x214
 #define SKU_NX                0x83
@@ -272,7 +271,7 @@ typedef struct _l4t_ctxt_t
 	int   ram_oc_opt;
 
 	u32   serial_port;
-	u32   sld_type;
+	bool  sld_type;
 
 	u32   sc7entry_size;
 
@@ -305,7 +304,6 @@ static const l4t_fw_t l4t_fw[] = {
 	{ BL33_LOAD_BASE,            "bl33.bin"        },
 	{ SC7ENTRY_BASE,             "sc7entry.bin"    },
 	{ SC7EXIT_BASE,              "sc7exit.bin"     },
-	{ SC7EXIT_B01_BASE,          "sc7exit_b01.bin" }, //!TODO: Update on fuse burns.
 	{ BPMPFW_BASE,               "bpmpfw.bin"      },
 	{ BPMPFW_B01_BASE,           "bpmpfw_b01.bin"  },
 	{ BPMPFW_B01_MTC_TABLE_BASE, "mtc_tbl_b01.bin" },
@@ -316,10 +314,9 @@ enum {
 	BL33_FW            = 1,
 	SC7ENTRY_FW        = 2,
 	SC7EXIT_FW         = 3,
-	SC7EXIT_B01_FW     = 4,
-	BPMPFW_FW          = 5,
-	BPMPFW_B01_FW      = 6,
-	BPMPFW_B01_MTC_TBL = 7
+	BPMPFW_FW          = 4,
+	BPMPFW_B01_FW      = 5,
+	BPMPFW_B01_MTC_TBL = 6
 };
 
 static void _l4t_crit_error(const char *text, bool needs_update)
@@ -335,9 +332,6 @@ static int _l4t_sd_load(u32 idx)
 {
 	FIL fp;
 	void *load_address = (void *)l4t_fw[idx].addr;
-
-	if (idx == SC7EXIT_B01_FW)
-		load_address -= sizeof(u32);
 
 	strcpy(sd_path + sd_path_len, l4t_fw[idx].name);
 
@@ -378,6 +372,10 @@ static void _l4t_sdram_lp0_save_params(bool t210b01)
 	// Only save changed carveout registers into PMC for SC7 Exit.
 
 	// VPR.
+#if CARVEOUT_NVDEC_TSEC_ENABLE
+	s32(MC_VIDEO_PROTECT_GPU_OVERRIDE_0, secure_scratch12);
+	s(MC_VIDEO_PROTECT_GPU_OVERRIDE_1, 15:0, secure_scratch49, 15:0);
+#endif
 	s(MC_VIDEO_PROTECT_BOM,     31:20, secure_scratch52, 26:15);
 	s(MC_VIDEO_PROTECT_SIZE_MB, 11:0,  secure_scratch53, 11:0);
 	if (!t210b01) {
@@ -489,13 +487,19 @@ static void _l4t_sdram_lp0_save_params(bool t210b01)
 
 static void _l4t_mc_config_carveout(bool t210b01)
 {
+#if CARVEOUT_NVDEC_TSEC_ENABLE
+	// Re-enable access for TSEC clients.
+	MC(MC_VIDEO_PROTECT_GPU_OVERRIDE_0) &= ~BIT(22);
+	MC(MC_VIDEO_PROTECT_GPU_OVERRIDE_1) &= ~(BIT(15) | BIT(14) | BIT(13));
+#endif
+
 	// Disabled VPR carveout. DT decides if enabled or not.
-	MC(MC_VIDEO_PROTECT_BOM) = 0xFFF00000;
-	MC(MC_VIDEO_PROTECT_SIZE_MB) = 0;
+	MC(MC_VIDEO_PROTECT_BOM)      = 0;
+	MC(MC_VIDEO_PROTECT_SIZE_MB)  = 0;
 	MC(MC_VIDEO_PROTECT_REG_CTRL) = VPR_CTRL_TZ_SECURE | VPR_CTRL_LOCKED;
 
 	// Temporarily disable TZDRAM carveout. For launching coldboot TZ.
-	MC(MC_SEC_CARVEOUT_BOM)      = 0xFFF00000;
+	MC(MC_SEC_CARVEOUT_BOM)      = 0;
 	MC(MC_SEC_CARVEOUT_SIZE_MB)  = 0;
 	MC(MC_SEC_CARVEOUT_REG_CTRL) = 0;
 
@@ -647,20 +651,24 @@ static void _l4t_mc_config_carveout(bool t210b01)
 	 */
 	carveout_base -= CARVEOUT_NVDEC_TSEC_ENABLE ? ALIGN(CARVEOUT_TSEC_SIZE, SZ_1M) : 0;
 	MC(MC_SECURITY_CARVEOUT4_BOM)        = CARVEOUT_NVDEC_TSEC_ENABLE ? carveout_base : 0;
+	MC(MC_SECURITY_CARVEOUT4_BOM_HI)     = 0x0;
 	MC(MC_SECURITY_CARVEOUT4_SIZE_128KB) = CARVEOUT_NVDEC_TSEC_ENABLE ? CARVEOUT_TSEC_SIZE / SZ_128K : 0;
+	MC(MC_SECURITY_CARVEOUT4_CLIENT_ACCESS2) = SEC_CARVEOUT_CA2_R_TSEC  | SEC_CARVEOUT_CA2_W_TSEC;
+	MC(MC_SECURITY_CARVEOUT4_CLIENT_ACCESS4) = SEC_CARVEOUT_CA4_R_TSECB | SEC_CARVEOUT_CA4_W_TSECB;
 	MC(MC_SECURITY_CARVEOUT4_CFG0) = SEC_CARVEOUT_CFG_LOCKED         |
 									 SEC_CARVEOUT_CFG_RD_FALCON_HS   |
 									 SEC_CARVEOUT_CFG_WR_FALCON_HS   |
 									 SEC_CARVEOUT_CFG_APERTURE_ID(4) |
 									 SEC_CARVEOUT_CFG_FORCE_APERTURE_ID_MATCH;
-
 	UPRINTF("GSC4: TSEC1 Carveout: %08X - %08X\n",
 		MC(MC_SECURITY_CARVEOUT4_BOM), MC(MC_SECURITY_CARVEOUT4_BOM) + MC(MC_SECURITY_CARVEOUT4_SIZE_128KB) * SZ_128K);
 
 	// Set TSECA carveout. Only for NVDEC bl/prod and TSEC. Otherwise disabled.
 	carveout_base -= CARVEOUT_NVDEC_TSEC_ENABLE ? ALIGN(CARVEOUT_TSEC_SIZE, SZ_1M) : 0;
 	MC(MC_SECURITY_CARVEOUT5_BOM)        = CARVEOUT_NVDEC_TSEC_ENABLE ? carveout_base : 0;
+	MC(MC_SECURITY_CARVEOUT5_BOM_HI)     = 0x0;
 	MC(MC_SECURITY_CARVEOUT5_SIZE_128KB) = CARVEOUT_NVDEC_TSEC_ENABLE ? CARVEOUT_TSEC_SIZE / SZ_128K : 0;
+	MC(MC_SECURITY_CARVEOUT5_CLIENT_ACCESS2) = SEC_CARVEOUT_CA2_R_TSEC | SEC_CARVEOUT_CA2_W_TSEC;
 	MC(MC_SECURITY_CARVEOUT5_CFG0) = SEC_CARVEOUT_CFG_LOCKED         |
 									 SEC_CARVEOUT_CFG_RD_FALCON_HS   |
 									 SEC_CARVEOUT_CFG_WR_FALCON_HS   |
@@ -698,7 +706,7 @@ static void _l4t_late_hw_config(bool t210b01)
 
 	// Set spare reg to 0xE0000 and clear everything else.
 	if (t210b01 && (SYSREG(AHB_AHB_SPARE_REG) & 0xE0000000) != 0xE0000000)
-		SYSREG(AHB_AHB_SPARE_REG) = 0xE0000 << 12;
+		SYSREG(AHB_AHB_SPARE_REG) = 0xE0000 << 12u;
 
 	// HDA loopback disable on prod.
 	PMC(APBDEV_PMC_STICKY_BITS) = PMC_STICKY_BITS_HDA_LPBK_DIS;
@@ -706,6 +714,9 @@ static void _l4t_late_hw_config(bool t210b01)
 	// Clear any MC error.
 	MC(MC_INTSTATUS) = MC(MC_INTSTATUS);
 
+	// Enable Wrap burst for BPMP, GPU and PCIE.
+	MSELECT(MSELECT_CONFIG) = (MSELECT(MSELECT_CONFIG) & (~(MSELECT_CFG_ERR_RESP_EN_GPU | MSELECT_CFG_ERR_RESP_EN_PCIE))) |
+							  (MSELECT_CFG_WRAP_TO_INCR_GPU | MSELECT_CFG_WRAP_TO_INCR_PCIE | MSELECT_CFG_WRAP_TO_INCR_BPMP);
 
 #if LOCK_PMC_REGISTERS
 	// Lock LP0 parameters and misc secure registers. Always happens on warmboot.
@@ -726,7 +737,7 @@ static void _l4t_bpmpfw_b01_config(l4t_ctxt_t *ctxt)
 	char *ram_oc_txt  = ctxt->ram_oc_txt;
 	u32   ram_oc_freq = ctxt->ram_oc_freq;
 	u32   ram_oc_opt  = ctxt->ram_oc_opt;
-	u32   ram_id      = fuse_read_dramid(true);
+	u32   ram_id      = fuse_read_dramid(false);
 
 	// Set default parameters.
 	*(u32 *)BPMPFW_B01_DTB_ADDR = 0;
@@ -747,7 +758,8 @@ static void _l4t_bpmpfw_b01_config(l4t_ctxt_t *ctxt)
 	u32 mtc_idx = mtc_table_idx_t210b01[ram_id];
 	for (u32 i = 0; i < 3; i++)
 	{
-		minerva_sdmmc_la_program(BPMPFW_B01_MTC_TABLE_OFFSET(mtc_idx, i), true);
+		if (true)
+			minerva_sdmmc_la_program(BPMPFW_B01_MTC_TABLE_OFFSET(mtc_idx, i), true);
 		memcpy(BPMPFW_B01_DTB_EMC_TBL_OFFSET(i), BPMPFW_B01_MTC_TABLE_OFFSET(mtc_idx, i), BPMPFW_B01_MTC_FREQ_TABLE_SIZE);
 	}
 
@@ -811,11 +823,9 @@ static int _l4t_sc7_exit_config(bool t210b01)
 	}
 	else
 	{
-		launch_ctxt_t hos_ctxt = {0};
-		u32 fw_fuses = *(u32 *)(SC7EXIT_B01_BASE - sizeof(u32)); // Fuses count in front of actual firmware.
-
 		// Get latest SC7-Exit if needed and setup PA id.
-		if (!pkg1_warmboot_config(&hos_ctxt, 0, fw_fuses, 0))
+		launch_ctxt_t hos_ctxt = {0};
+		if (!pkg1_warmboot_config(&hos_ctxt, 0, 0, 0))
 		{
 			gfx_con.mute = false;
 			gfx_wputs("\nFailed to match warmboot with fuses!\nIf you continue, sleep wont work!");
@@ -853,7 +863,7 @@ static void _l4t_set_config(l4t_ctxt_t *ctxt, const ini_sec_t *ini_sec, int entr
 	char val[4] = {0};
 
 	// Set default SLD type.
-	ctxt->sld_type = BL_MAGIC_L4TLDR_SLD;
+	ctxt->sld_type = true;
 
 	// Parse ini section and prepare BL33 env.
 	LIST_FOREACH_ENTRY(ini_kv_t, kv, &ini_sec->kvs, link)
@@ -889,7 +899,7 @@ static void _l4t_set_config(l4t_ctxt_t *ctxt, const ini_sec_t *ini_sec, int entr
 		else if (!strcmp("uart_port",   kv->key))
 			ctxt->serial_port = atoi(kv->val);
 		else if (!strcmp("sld_type",    kv->key))
-			ctxt->sld_type    = strtol(kv->val, NULL, 16);
+			ctxt->sld_type    = atoi(kv->val);
 
 		// Set key/val to BL33 env.
 		_l4t_bl33_cfg_set_key(bl33_env, kv->key, kv->val);
@@ -986,6 +996,13 @@ void launch_l4t(const ini_sec_t *ini_sec, int entry_idx, int is_list, bool t210b
 			_l4t_crit_error("loading BPMP-FW", true);
 			return;
 		}
+
+		// Load SC7-Exit firmware.
+		if (!_l4t_sd_load(SC7EXIT_FW))
+		{
+			_l4t_crit_error("loading SC7-Exit", true);
+			return;
+		}
 	}
 	else
 	{
@@ -1002,13 +1019,6 @@ void launch_l4t(const ini_sec_t *ini_sec, int entry_idx, int is_list, bool t210b
 			_l4t_crit_error("loading BPMP-FW MTC", true);
 			return;
 		}
-	}
-
-	// Load SC7-Exit firmware.
-	if (!_l4t_sd_load(!t210b01 ? SC7EXIT_FW : SC7EXIT_B01_FW))
-	{
-		_l4t_crit_error("loading SC7-Exit", true);
-		return;
 	}
 
 	// Set SC7-Exit firmware address to PMC for bootrom and do further setup.
@@ -1117,7 +1127,7 @@ void launch_l4t(const ini_sec_t *ini_sec, int entry_idx, int is_list, bool t210b
 			max7762x_regulator_set_voltage(REGULATOR_SD1, ctxt->ram_oc_vdd2 * 1000);
 
 		// Train the rest of the table, apply FSP WAR, set RAM to 800 MHz.
-		minerva_prep_boot_l4t(ctxt->ram_oc_freq, ctxt->ram_oc_opt);
+		minerva_prep_boot_l4t(ctxt->ram_oc_freq, ctxt->ram_oc_opt, true);
 
 		// Set emc table parameters and copy it.
 		int table_entries = minerva_get_mtc_table_entries();
@@ -1156,7 +1166,7 @@ void launch_l4t(const ini_sec_t *ini_sec, int entry_idx, int is_list, bool t210b
 	_l4t_mc_config_carveout(t210b01);
 
 	// Deinit any unneeded HW.
-	hw_deinit(false, ctxt->sld_type);
+	hw_deinit(ctxt->sld_type);
 
 	// Do late hardware config.
 	_l4t_late_hw_config(t210b01);
@@ -1165,10 +1175,6 @@ void launch_l4t(const ini_sec_t *ini_sec, int entry_idx, int is_list, bool t210b
 	{
 		// Launch BL31.
 		ccplex_boot_cpu0(TZDRAM_COLD_ENTRY, true);
-
-		// Enable Wrap burst for BPMP, GPU and PCIE.
-		MSELECT(MSELECT_CONFIG) = (MSELECT(MSELECT_CONFIG) & (~(MSELECT_CFG_ERR_RESP_EN_GPU | MSELECT_CFG_ERR_RESP_EN_PCIE))) |
-								  (MSELECT_CFG_WRAP_TO_INCR_GPU | MSELECT_CFG_WRAP_TO_INCR_PCIE | MSELECT_CFG_WRAP_TO_INCR_BPMP);
 
 		// For T210B01, prep reset vector for SC7 save state and start BPMP-FW.
 		EXCP_VEC(EVP_COP_RESET_VECTOR) = BPMPFW_B01_ENTRYPOINT;

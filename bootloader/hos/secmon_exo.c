@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2024 CTCaer
+ * Copyright (c) 2018-2025 CTCaer
  * Copyright (c) 2019 Atmosphère-NX
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -24,8 +24,6 @@
 #include "../config.h"
 #include <libs/fatfs/ff.h>
 #include "../storage/emummc.h"
-
-extern hekate_config h_cfg;
 
 enum emuMMC_Type
 {
@@ -157,8 +155,8 @@ void config_exosphere(launch_ctxt_t *ctxt, u32 warmboot_base)
 	//! TODO: Replace current HOS version decoding (as it's bound to break in the future).
 
 	// Old exosphere target versioning.
-	if (ctxt->pkg1_id->kb >= HOS_KB_VERSION_1210)                     // 12.1.0+
-		exo_fw_no = ctxt->pkg1_id->kb + 4;
+	if (ctxt->pkg1_id->mkey >= HOS_MKEY_VER_1210)                     // 12.1.0+
+		exo_fw_no = ctxt->pkg1_id->mkey + 4;
 	else if (ctxt->pkg1_id->fuses <= 3 || ctxt->pkg1_id->fuses >= 10) // 1.0.0 - 3.0.0, 8.1.0 - 12.0.3.
 		exo_fw_no = ctxt->pkg1_id->fuses;
 	else
@@ -171,7 +169,7 @@ void config_exosphere(launch_ctxt_t *ctxt, u32 warmboot_base)
 		exo_fw_no++;
 
 	// Set 12.1.0 specific revision.
-	if (ctxt->pkg1_id->kb == HOS_KB_VERSION_1210)
+	if (ctxt->pkg1_id->mkey == HOS_MKEY_VER_1210)
 		ctxt->exo_ctx.hos_revision = 1;
 
 	// Feed old exosphere target versioning to new.
@@ -199,7 +197,7 @@ void config_exosphere(launch_ctxt_t *ctxt, u32 warmboot_base)
 	case 12:
 		exo_fw_no = EXO_FW_VER(9, 1);
 		break;
-	case 13 ... 23: //!TODO: Update on API changes. 23: 20.0.0.
+	case 13 ... 24: //!TODO: Update on API changes. 24: 21.0.0.
 		exo_fw_no = EXO_FW_VER(exo_fw_no - 3, ctxt->exo_ctx.hos_revision);
 		break;
 	}
@@ -385,8 +383,6 @@ static const char *get_error_desc(u32 error_desc)
 	}
 }
 
-#define HOS_PID_BOOT2 0x8
-
 void secmon_exo_check_panic()
 {
 	volatile atm_fatal_error_ctx *rpt = (atm_fatal_error_ctx *)ATM_FATAL_ERR_CTX_ADDR;
@@ -398,13 +394,9 @@ void secmon_exo_check_panic()
 	gfx_clear_grey(0x1B);
 	gfx_con_setpos(0, 0);
 
-	WPRINTF("Panic occurred while running Atmosphere.\n\n");
+	WPRINTF("Atmosphere panic occurred!\n\n");
 	WPRINTFARGS("Title ID: %08X%08X", (u32)((u64)rpt->title_id >> 32), (u32)rpt->title_id);
 	WPRINTFARGS("Error:    %s (0x%x)\n", get_error_desc(rpt->error_desc), rpt->error_desc);
-
-	// Check if mixed atmosphere sysmodules.
-	if ((u32)rpt->title_id == HOS_PID_BOOT2)
-		WPRINTF("Mismatched Atmosphere files?\n");
 
 	// Save context to the SD card.
 	char filepath[0x40];
@@ -425,13 +417,11 @@ void secmon_exo_check_panic()
 	rpt->magic = 0;
 
 	gfx_printf("\n\nPress POWER to continue.\n");
+	gfx_con_setpos(0, 0);
 
-	display_backlight_brightness(100, 1000);
+	display_backlight_brightness(150, 1000);
 	msleep(1000);
 
 	while (!(btn_wait() & BTN_POWER))
 		;
-
-	display_backlight_brightness(0, 1000);
-	gfx_con_setpos(0, 0);
 }

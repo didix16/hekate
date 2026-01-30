@@ -29,9 +29,7 @@
 //#define DPRINTF(...) gfx_printf(__VA_ARGS__)
 #define DPRINTF(...)
 
-extern hekate_config h_cfg;
-
-extern bool is_ipl_updated(void *buf, const char *path, bool force);
+extern bool is_ipl_updated(void *buf, u32 size, const char *path, bool force);
 
 #define PKG3_KIP_SKIP_MAX 16
 
@@ -86,9 +84,10 @@ typedef struct _pkg3_content_t
 
 static void _pkg3_update_r2p()
 {
-	u8 *r2p_payload = sd_file_read("atmosphere/reboot_payload.bin", NULL);
+	u32 size = 0;
+	u8 *r2p_payload = sd_file_read("atmosphere/reboot_payload.bin", &size);
 
-	is_ipl_updated(r2p_payload, "atmosphere/reboot_payload.bin", h_cfg.updater2p ? true : false);
+	is_ipl_updated(r2p_payload, size, "atmosphere/reboot_payload.bin", h_cfg.updater2p ? true : false);
 
 	free(r2p_payload);
 }
@@ -101,7 +100,7 @@ static int _pkg3_kip1_skip(char ***pkg3_kip1_skip, u32 *pkg3_kip1_skip_num, char
 
 	// Allocate pointer list memory.
 	if (!(*pkg3_kip1_skip))
-		(*pkg3_kip1_skip) = calloc(PKG3_KIP_SKIP_MAX, sizeof(char *));
+		(*pkg3_kip1_skip) = zalloc(PKG3_KIP_SKIP_MAX * sizeof(char *));
 
 	// Set first kip name.
 	(*pkg3_kip1_skip)[(*pkg3_kip1_skip_num)++] = value;
@@ -135,7 +134,7 @@ int parse_pkg3(launch_ctxt_t *ctxt, const char *path)
 	bool experimental = false;
 
 	// Skip if stock and Exosphere and warmboot are not needed.
-	bool pkg1_old = ctxt->pkg1_id->kb <= HOS_KB_VERSION_620; // Should check if t210b01?
+	bool pkg1_old = ctxt->pkg1_id->mkey <= HOS_MKEY_VER_620; // Should check if t210b01?
 	bool emummc_disabled = !emu_cfg.enabled || h_cfg.emummc_force_disable;
 
 	LIST_FOREACH_ENTRY(ini_kv_t, kv, &ctxt->cfg->kvs, link)
