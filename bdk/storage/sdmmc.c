@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018 naehrwert
- * Copyright (c) 2018-2025 CTCaer
+ * Copyright (c) 2018-2026 CTCaer
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -73,34 +73,44 @@ static int _sdmmc_storage_check_card_status(u32 res)
 		 R1_CARD_ECC_FAILED    | R1_CC_ERROR      | R1_ERROR           |
 		 R1_CID_CSD_OVERWRITE  | R1_WP_ERASE_SKIP | R1_ERASE_RESET     |
 		 R1_SWITCH_ERROR))
-		return 0;
+		return 1;
 
 	// No errors.
-	return 1;
+	return 0;
 }
 
-static int _sdmmc_storage_execute_cmd_type1_ex(sdmmc_storage_t *storage, u32 *resp, u32 cmd, u32 arg, u32 check_busy, u32 expected_state, u32 mask)
+static int _sdmmc_storage_check_cached_card_status(sdmmc_t *sdmmc)
+{
+	u32 resp;
+	sdmmc_get_cached_rsp(sdmmc, &resp, SDMMC_RSP_TYPE_1);
+	if (_sdmmc_storage_check_card_status(resp))
+		return 1;
+
+	return 0;
+}
+
+static int _sdmmc_storage_execute_cmd_ex_masked(sdmmc_storage_t *storage, u32 *resp, u32 cmd, u32 arg, u32 check_busy, u32 expected_state, u32 mask)
 {
 	sdmmc_cmd_t cmdbuf;
 	sdmmc_init_cmd(&cmdbuf, cmd, arg, SDMMC_RSP_TYPE_1, check_busy);
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
-		return 0;
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
+		return 1;
 
 	sdmmc_get_cached_rsp(storage->sdmmc, resp, SDMMC_RSP_TYPE_1);
 	if (mask)
 		*resp &= ~mask;
 
-	if (_sdmmc_storage_check_card_status(*resp))
+	if (!_sdmmc_storage_check_card_status(*resp))
 		if (expected_state == R1_SKIP_STATE_CHECK || R1_CURRENT_STATE(*resp) == expected_state)
-			return 1;
+			return 0;
 
-	return 0;
+	return 1;
 }
 
-static int _sdmmc_storage_execute_cmd_type1(sdmmc_storage_t *storage, u32 cmd, u32 arg, u32 check_busy, u32 expected_state)
+static int _sdmmc_storage_execute_cmd_ex_state(sdmmc_storage_t *storage, u32 cmd, u32 arg, u32 check_busy, u32 expected_state)
 {
 	u32 tmp;
-	return _sdmmc_storage_execute_cmd_type1_ex(storage, &tmp, cmd, arg, check_busy, expected_state, 0);
+	return _sdmmc_storage_execute_cmd_ex_masked(storage, &tmp, cmd, arg, check_busy, expected_state, 0);
 }
 
 static int _sdmmc_storage_go_idle_state(sdmmc_storage_t *storage)
@@ -115,39 +125,39 @@ static int _sdmmc_storage_get_cid(sdmmc_storage_t *storage)
 {
 	sdmmc_cmd_t cmdbuf;
 	sdmmc_init_cmd(&cmdbuf, MMC_ALL_SEND_CID, 0, SDMMC_RSP_TYPE_2, 0);
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
-		return 0;
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
+		return 1;
 
 	sdmmc_get_cached_rsp(storage->sdmmc, (u32 *)storage->raw_cid, SDMMC_RSP_TYPE_2);
 
-	return 1;
+	return 0;
 }
 
 static int _sdmmc_storage_select_card(sdmmc_storage_t *storage)
 {
-	return _sdmmc_storage_execute_cmd_type1(storage, MMC_SELECT_CARD, storage->rca << 16, 1, R1_SKIP_STATE_CHECK);
+	return _sdmmc_storage_execute_cmd_ex_state(storage, MMC_SELECT_CARD, storage->rca << 16, 1, R1_SKIP_STATE_CHECK);
 }
 
 static int _sdmmc_storage_get_csd(sdmmc_storage_t *storage)
 {
 	sdmmc_cmd_t cmdbuf;
 	sdmmc_init_cmd(&cmdbuf, MMC_SEND_CSD, storage->rca << 16, SDMMC_RSP_TYPE_2, 0);
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
-		return 0;
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
+		return 1;
 
 	sdmmc_get_cached_rsp(storage->sdmmc, (u32 *)storage->raw_csd, SDMMC_RSP_TYPE_2);
 
-	return 1;
+	return 0;
 }
 
 static int _sdmmc_storage_set_blocklen(sdmmc_storage_t *storage, u32 blocklen)
 {
-	return _sdmmc_storage_execute_cmd_type1(storage, MMC_SET_BLOCKLEN, blocklen, 0, R1_STATE_TRAN);
+	return _sdmmc_storage_execute_cmd_ex_state(storage, MMC_SET_BLOCKLEN, blocklen, 0, R1_STATE_TRAN);
 }
 
 static int _sdmmc_storage_get_status(sdmmc_storage_t *storage, u32 *resp, u32 mask)
 {
-	return _sdmmc_storage_execute_cmd_type1_ex(storage, resp, MMC_SEND_STATUS, storage->rca << 16, 0, R1_STATE_TRAN, mask);
+	return _sdmmc_storage_execute_cmd_ex_masked(storage, resp, MMC_SEND_STATUS, storage->rca << 16, 0, R1_STATE_TRAN, mask);
 }
 
 static int _sdmmc_storage_check_status(sdmmc_storage_t *storage)
@@ -156,12 +166,12 @@ static int _sdmmc_storage_check_status(sdmmc_storage_t *storage)
 	return _sdmmc_storage_get_status(storage, &tmp, 0);
 }
 
-int sdmmc_storage_execute_vendor_cmd(sdmmc_storage_t *storage, u32 arg)
+int sdmmc_storage_vendor_cmd(sdmmc_storage_t *storage, u32 arg)
 {
 	sdmmc_cmd_t cmdbuf;
-	sdmmc_init_cmd(&cmdbuf, MMC_VENDOR_62_CMD, arg, SDMMC_RSP_TYPE_1, 1);
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, 0, 0))
-		return 0;
+	sdmmc_init_cmd(&cmdbuf, MMC_VENDOR_CMD_62, arg, SDMMC_RSP_TYPE_1, 1);
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
+		return 1;
 
 	u32 resp;
 	sdmmc_get_cached_rsp(storage->sdmmc, &resp, SDMMC_RSP_TYPE_1);
@@ -186,14 +196,14 @@ int sdmmc_storage_execute_vendor_cmd(sdmmc_storage_t *storage, u32 arg)
 int sdmmc_storage_vendor_sandisk_report(sdmmc_storage_t *storage, void *buf)
 {
 	// Request health report.
-	if (!sdmmc_storage_execute_vendor_cmd(storage, MMC_SANDISK_HEALTH_REPORT))
+	if (sdmmc_storage_vendor_cmd(storage, MMC_SANDISK_HEALTH_REPORT))
 		return 2;
 
 	u32 tmp = 0;
 	sdmmc_cmd_t cmdbuf;
 	sdmmc_req_t reqbuf;
 
-	sdmmc_init_cmd(&cmdbuf, MMC_VENDOR_63_CMD, 0, SDMMC_RSP_TYPE_1, 0); // similar to CMD17 with arg 0x0.
+	sdmmc_init_cmd(&cmdbuf, MMC_VENDOR_CMD_63, 0, SDMMC_RSP_TYPE_1, 0); // similar to CMD17 with arg 0x0.
 
 	reqbuf.buf              = buf;
 	reqbuf.num_sectors      = 1;
@@ -202,16 +212,39 @@ int sdmmc_storage_vendor_sandisk_report(sdmmc_storage_t *storage, void *buf)
 	reqbuf.is_multi_block   = 0;
 	reqbuf.is_auto_stop_trn = 0;
 
-	u32 blkcnt_out;
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, &blkcnt_out))
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
 	{
-		sdmmc_stop_transmission(storage->sdmmc, &tmp);
 		_sdmmc_storage_get_status(storage, &tmp, 0);
 
-		return 0;
+		return 1;
 	}
 
-	return 1;
+	return _sdmmc_storage_check_cached_card_status(storage->sdmmc);
+}
+
+int sdmmc_storage_gen_cmd(sdmmc_storage_t *storage, u32 arg, void *buf)
+{
+	u32 tmp = 0;
+	sdmmc_cmd_t cmdbuf;
+	sdmmc_req_t reqbuf;
+
+	sdmmc_init_cmd(&cmdbuf, MMC_GEN_CMD, arg, SDMMC_RSP_TYPE_1, 0);
+
+	reqbuf.buf              = buf;
+	reqbuf.blksize          = SDMMC_DAT_BLOCKSIZE;
+	reqbuf.num_sectors      = 1;
+	reqbuf.is_write         = !(arg & 1);
+	reqbuf.is_multi_block   = 0;
+	reqbuf.is_auto_stop_trn = 0;
+
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
+	{
+		_sdmmc_storage_get_status(storage, &tmp, 0);
+
+		return 1;
+	}
+
+	return _sdmmc_storage_check_cached_card_status(storage->sdmmc);
 }
 
 static int _sdmmc_storage_readwrite_ex(sdmmc_storage_t *storage, u32 *blkcnt_out, u32 sector, u32 num_sectors, void *buf, u32 is_write)
@@ -233,38 +266,34 @@ static int _sdmmc_storage_readwrite_ex(sdmmc_storage_t *storage, u32 *blkcnt_out
 	reqbuf.is_multi_block   = 1;
 	reqbuf.is_auto_stop_trn = 1;
 
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, blkcnt_out))
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, blkcnt_out))
 	{
 		sdmmc_stop_transmission(storage->sdmmc, &tmp);
 		_sdmmc_storage_get_status(storage, &tmp, 0);
 
-		return 0;
+		return 1;
 	}
 
-	sdmmc_get_cached_rsp(storage->sdmmc, &tmp, SDMMC_RSP_TYPE_1);
-	if (!_sdmmc_storage_check_card_status(tmp))
-		return 0;
-
-	return 1;
+	return _sdmmc_storage_check_cached_card_status(storage->sdmmc);
 }
 
 int sdmmc_storage_end(sdmmc_storage_t *storage)
 {
 	DPRINTF("[SDMMC%d] end\n", storage->sdmmc->id);
 
-	if (!_sdmmc_storage_go_idle_state(storage))
-		return 0;
+	if (_sdmmc_storage_go_idle_state(storage))
+		return 1;
 
 	sdmmc_end(storage->sdmmc);
 
 	storage->initialized = 0;
 
-	return 1;
+	return 0;
 }
 
 static int _sdmmc_storage_handle_io_error(sdmmc_storage_t *storage, bool first_reinit)
 {
-	int res = 0;
+	int res = 1;
 
 	if (storage->sdmmc->id == SDMMC_1 || storage->sdmmc->id == SDMMC_4)
 	{
@@ -277,7 +306,7 @@ static int _sdmmc_storage_handle_io_error(sdmmc_storage_t *storage, bool first_r
 			else
 			{
 				res = sd_init_retry(true);
-				if (!res)
+				if (res)
 					sd_error_count_increment(SD_ERROR_INIT_FAIL);
 			}
 		}
@@ -290,7 +319,7 @@ static int _sdmmc_storage_handle_io_error(sdmmc_storage_t *storage, bool first_r
 			else
 			{
 				res = emmc_init_retry(true);
-				if (!res)
+				if (res)
 					emmc_error_count_increment(EMMC_ERROR_INIT_FAIL);
 			}
 		}
@@ -308,7 +337,7 @@ static int _sdmmc_storage_readwrite(sdmmc_storage_t *storage, u32 sector, u32 nu
 
 	// Exit if not initialized.
 	if (!storage->initialized)
-		return 0;
+		return 1;
 
 	// Check if out of bounds.
 	if (((u64)sector + num_sectors) > storage->sec_cnt)
@@ -316,7 +345,7 @@ static int _sdmmc_storage_readwrite(sdmmc_storage_t *storage, u32 sector, u32 nu
 #ifdef ERROR_EXTRA_PRINTING
 		EPRINTFARGS("SDMMC%d: Out of bounds!", storage->sdmmc->id + 1);
 #endif
-		return 0;
+		return 1;
 	}
 
 	while (sct_total)
@@ -327,7 +356,7 @@ static int _sdmmc_storage_readwrite(sdmmc_storage_t *storage, u32 sector, u32 nu
 		do
 		{
 reinit_try:
-			if (_sdmmc_storage_readwrite_ex(storage, &blkcnt, sct_off, MIN(sct_total, SDMMC_AMAX_BLOCKNUM), bbuf, is_write))
+			if (!_sdmmc_storage_readwrite_ex(storage, &blkcnt, sct_off, MIN(sct_total, SDMMC_AMAX_BLOCKNUM), bbuf, is_write))
 				goto out;
 			else
 				retries--;
@@ -338,7 +367,7 @@ reinit_try:
 		} while (retries);
 
 		// Disk IO failure! Reinit SD/EMMC to a lower speed.
-		if (_sdmmc_storage_handle_io_error(storage, first_reinit))
+		if (!_sdmmc_storage_handle_io_error(storage, first_reinit))
 		{
 			// Reset values for a retry.
 			blkcnt = 0;
@@ -353,7 +382,7 @@ reinit_try:
 		}
 
 		// Failed.
-		return 0;
+		return 1;
 
 out:
 		sct_off += blkcnt;
@@ -361,38 +390,39 @@ out:
 		bbuf += SDMMC_DAT_BLOCKSIZE * blkcnt;
 	}
 
-	return 1;
+	return 0;
 }
 
 int sdmmc_storage_read(sdmmc_storage_t *storage, u32 sector, u32 num_sectors, void *buf)
 {
 	// Ensure that SDMMC has access to buffer and it's SDMMC DMA aligned.
-	if (mc_client_has_access(buf) && !((u32)buf % 8))
+	if (mc_client_has_access(buf) && !((u32)buf % SDMMC_ADMA_ADDR_ALIGN))
 		return _sdmmc_storage_readwrite(storage, sector, num_sectors, buf, 0);
 
-	if (num_sectors > (SDMMC_UP_BUF_SZ / SDMMC_DAT_BLOCKSIZE))
-		return 0;
-
-	u8 *tmp_buf = (u8 *)SDMMC_UPPER_BUFFER;
-	if (_sdmmc_storage_readwrite(storage, sector, num_sectors, tmp_buf, 0))
-	{
-		memcpy(buf, tmp_buf, SDMMC_DAT_BLOCKSIZE * num_sectors);
+	if (num_sectors > (SDMMC_ALT_DMA_BUF_SZ / SDMMC_DAT_BLOCKSIZE))
 		return 1;
-	}
+
+	u8 *tmp_buf = (u8 *)SDMMC_ALT_DMA_BUFFER;
+	if (_sdmmc_storage_readwrite(storage, sector, num_sectors, tmp_buf, 0))
+		return 1;
+
+	memcpy(buf, tmp_buf, SDMMC_DAT_BLOCKSIZE * num_sectors);
+
 	return 0;
 }
 
 int sdmmc_storage_write(sdmmc_storage_t *storage, u32 sector, u32 num_sectors, void *buf)
 {
 	// Ensure that SDMMC has access to buffer and it's SDMMC DMA aligned.
-	if (mc_client_has_access(buf) && !((u32)buf % 8))
+	if (mc_client_has_access(buf) && !((u32)buf % SDMMC_ADMA_ADDR_ALIGN))
 		return _sdmmc_storage_readwrite(storage, sector, num_sectors, buf, 1);
 
-	if (num_sectors > (SDMMC_UP_BUF_SZ / SDMMC_DAT_BLOCKSIZE))
-		return 0;
+	if (num_sectors > (SDMMC_ALT_DMA_BUF_SZ / SDMMC_DAT_BLOCKSIZE))
+		return 1;
 
-	u8 *tmp_buf = (u8 *)SDMMC_UPPER_BUFFER;
+	u8 *tmp_buf = (u8 *)SDMMC_ALT_DMA_BUFFER;
 	memcpy(tmp_buf, buf, SDMMC_DAT_BLOCKSIZE * num_sectors);
+
 	return _sdmmc_storage_readwrite(storage, sector, num_sectors, tmp_buf, 1);
 }
 
@@ -400,7 +430,7 @@ int sdmmc_storage_write(sdmmc_storage_t *storage, u32 sector, u32 num_sectors, v
 * MMC specific functions.
 */
 
-static int _mmc_storage_get_op_cond_inner(sdmmc_storage_t *storage, u32 *pout, u32 power)
+static int _mmc_storage_get_op_cond_inner(sdmmc_storage_t *storage, u32 *rocr, u32 power)
 {
 	sdmmc_cmd_t cmdbuf;
 
@@ -408,22 +438,22 @@ static int _mmc_storage_get_op_cond_inner(sdmmc_storage_t *storage, u32 *pout, u
 	switch (power)
 	{
 	case SDMMC_POWER_1_8:
-		arg = MMC_CARD_CCS | MMC_CARD_VDD_18;
+		arg = MMC_OCR_HCS | MMC_OCR_VCCQ_18;
 		break;
 
 	case SDMMC_POWER_3_3:
-		arg = MMC_CARD_CCS | MMC_CARD_VDD_27_34;
+		arg = MMC_OCR_HCS | MMC_OCR_VCCQ_27_34;
 		break;
 
 	default:
-		return 0;
+		return 1;
 	}
 
 	sdmmc_init_cmd(&cmdbuf, MMC_SEND_OP_COND, arg, SDMMC_RSP_TYPE_3, 0);
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
-		return 0;
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
+		return 1;
 
-	return sdmmc_get_cached_rsp(storage->sdmmc, pout, SDMMC_RSP_TYPE_3);
+	return sdmmc_get_cached_rsp(storage->sdmmc, rocr, SDMMC_RSP_TYPE_3);
 }
 
 static int _mmc_storage_get_op_cond(sdmmc_storage_t *storage, u32 power)
@@ -432,18 +462,18 @@ static int _mmc_storage_get_op_cond(sdmmc_storage_t *storage, u32 power)
 
 	while (true)
 	{
-		u32 cond = 0;
-		if (!_mmc_storage_get_op_cond_inner(storage, &cond, power))
+		u32 rocr = 0;
+		if (_mmc_storage_get_op_cond_inner(storage, &rocr, power))
 			break;
 
 		// Check if power up is done.
-		if (cond & MMC_CARD_BUSY)
+		if (rocr & MMC_OCR_BUSY)
 		{
 			// Check if card is high capacity.
-			if (cond & MMC_CARD_CCS)
+			if (rocr & MMC_OCR_CCS)
 				storage->has_sector_access = 1;
 
-			return 1;
+			return 0;
 		}
 		if (get_tmr_ms() > timeout)
 			break;
@@ -451,12 +481,12 @@ static int _mmc_storage_get_op_cond(sdmmc_storage_t *storage, u32 power)
 		usleep(1000);
 	}
 
-	return 0;
+	return 1;
 }
 
 static int _mmc_storage_set_relative_addr(sdmmc_storage_t *storage)
 {
-	return _sdmmc_storage_execute_cmd_type1(storage, MMC_SET_RELATIVE_ADDR, storage->rca << 16, 0, R1_SKIP_STATE_CHECK);
+	return _sdmmc_storage_execute_cmd_ex_state(storage, MMC_SET_RELATIVE_ADDR, storage->rca << 16, 0, R1_SKIP_STATE_CHECK);
 }
 
 static void _mmc_storage_parse_cid(sdmmc_storage_t *storage)
@@ -515,95 +545,66 @@ static void _mmc_storage_parse_csd(sdmmc_storage_t *storage)
 	storage->sec_cnt          = storage->csd.capacity;
 }
 
-static void _mmc_storage_parse_ext_csd(sdmmc_storage_t *storage, u8 *buf)
+static void _mmc_storage_parse_ext_csd(sdmmc_storage_t *storage)
 {
-	storage->ext_csd.rev          = buf[EXT_CSD_REV];
-	storage->ext_csd.ext_struct   = buf[EXT_CSD_STRUCTURE];
-	storage->ext_csd.card_type    = buf[EXT_CSD_CARD_TYPE];
-	storage->ext_csd.dev_version  = *(u16 *)&buf[EXT_CSD_DEVICE_VERSION];
-	storage->ext_csd.boot_mult    = buf[EXT_CSD_BOOT_MULT];
-	storage->ext_csd.rpmb_mult    = buf[EXT_CSD_RPMB_MULT];
-	//storage->ext_csd.bkops        = buf[EXT_CSD_BKOPS_SUPPORT];
-	//storage->ext_csd.bkops_en     = buf[EXT_CSD_BKOPS_EN];
-	//storage->ext_csd.bkops_status = buf[EXT_CSD_BKOPS_STATUS];
+	u8 *ext_csd = storage->raw_ext_csd;
 
-	storage->ext_csd.pre_eol_info   = buf[EXT_CSD_PRE_EOL_INFO];
-	storage->ext_csd.dev_life_est_a = buf[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A];
-	storage->ext_csd.dev_life_est_b = buf[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B];
+	storage->ext_csd.rev          = ext_csd[EXT_CSD_REV];
+	storage->ext_csd.ext_struct   = ext_csd[EXT_CSD_STRUCTURE];
+	storage->ext_csd.card_type    = ext_csd[EXT_CSD_CARD_TYPE];
+	storage->ext_csd.dev_version  = *(u16 *)&ext_csd[EXT_CSD_DEVICE_VERSION];
+	storage->ext_csd.boot_mult    = ext_csd[EXT_CSD_BOOT_MULT];
+	storage->ext_csd.rpmb_mult    = ext_csd[EXT_CSD_RPMB_MULT];
+	storage->ext_csd.bkops        = ext_csd[EXT_CSD_BKOPS_SUPPORT];
+	storage->ext_csd.bkops_en     = ext_csd[EXT_CSD_BKOPS_EN];
 
-	storage->ext_csd.cache_size   =  buf[EXT_CSD_CACHE_SIZE]            |
-									(buf[EXT_CSD_CACHE_SIZE + 1] << 8)  |
-									(buf[EXT_CSD_CACHE_SIZE + 2] << 16) |
-									(buf[EXT_CSD_CACHE_SIZE + 3] << 24);
+	storage->ext_csd.pre_eol_info   = ext_csd[EXT_CSD_PRE_EOL_INFO];
+	storage->ext_csd.dev_life_est_a = ext_csd[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A];
+	storage->ext_csd.dev_life_est_b = ext_csd[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B];
 
-	storage->ext_csd.max_enh_mult = (buf[EXT_CSD_MAX_ENH_SIZE_MULT]             |
-									(buf[EXT_CSD_MAX_ENH_SIZE_MULT + 1] << 8)   |
-									(buf[EXT_CSD_MAX_ENH_SIZE_MULT + 2] << 16)) *
-									 buf[EXT_CSD_HC_WP_GRP_SIZE] * buf[EXT_CSD_HC_ERASE_GRP_SIZE];
+	storage->ext_csd.cache_size   =  ext_csd[EXT_CSD_CACHE_SIZE]            |
+									(ext_csd[EXT_CSD_CACHE_SIZE + 1] << 8)  |
+									(ext_csd[EXT_CSD_CACHE_SIZE + 2] << 16) |
+									(ext_csd[EXT_CSD_CACHE_SIZE + 3] << 24);
 
-	storage->sec_cnt = *(u32 *)&buf[EXT_CSD_SEC_CNT];
+	storage->ext_csd.max_enh_mult = (ext_csd[EXT_CSD_MAX_ENH_SIZE_MULT]             |
+									(ext_csd[EXT_CSD_MAX_ENH_SIZE_MULT + 1] << 8)   |
+									(ext_csd[EXT_CSD_MAX_ENH_SIZE_MULT + 2] << 16)) *
+									 ext_csd[EXT_CSD_HC_WP_GRP_SIZE] * ext_csd[EXT_CSD_HC_ERASE_GRP_SIZE];
+
+	storage->sec_cnt = *(u32 *)&ext_csd[EXT_CSD_SEC_CNT];
 }
 
-int mmc_storage_get_ext_csd(sdmmc_storage_t *storage, void *buf)
+int mmc_storage_get_ext_csd(sdmmc_storage_t *storage)
 {
 	sdmmc_cmd_t cmdbuf;
 	sdmmc_init_cmd(&cmdbuf, MMC_SEND_EXT_CSD, 0, SDMMC_RSP_TYPE_1, 0);
 
 	sdmmc_req_t reqbuf;
-	reqbuf.buf = buf;
+	reqbuf.buf = storage->raw_ext_csd;
 	reqbuf.blksize = SDMMC_DAT_BLOCKSIZE;
 	reqbuf.num_sectors = 1;
 	reqbuf.is_write = 0;
 	reqbuf.is_multi_block = 0;
 	reqbuf.is_auto_stop_trn = 0;
 
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
-		return 0;
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
+		return 1;
 
-	u32 tmp = 0;
-	sdmmc_get_cached_rsp(storage->sdmmc, &tmp, SDMMC_RSP_TYPE_1);
-	_mmc_storage_parse_ext_csd(storage, buf);
+	_mmc_storage_parse_ext_csd(storage);
 
-	return _sdmmc_storage_check_card_status(tmp);
-}
-
-int sd_storage_get_ext_reg(sdmmc_storage_t *storage, u8 fno, u8 page, u16 address, u32 len, void *buf)
-{
-	if (!(storage->scr.cmds & BIT(2)))
-		return 0;
-
-	sdmmc_cmd_t cmdbuf;
-
-	u32 arg = fno << 27 | page << 18 | address << 9 | (len - 1);
-
-	sdmmc_init_cmd(&cmdbuf, SD_READ_EXTR_SINGLE, arg, SDMMC_RSP_TYPE_1, 0);
-
-	sdmmc_req_t reqbuf;
-	reqbuf.buf = buf;
-	reqbuf.blksize = SDMMC_DAT_BLOCKSIZE;
-	reqbuf.num_sectors = 1;
-	reqbuf.is_write = 0;
-	reqbuf.is_multi_block = 0;
-	reqbuf.is_auto_stop_trn = 0;
-
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
-		return 0;
-
-	u32 tmp = 0;
-	sdmmc_get_cached_rsp(storage->sdmmc, &tmp, SDMMC_RSP_TYPE_1);
-
-	return _sdmmc_storage_check_card_status(tmp);
+	return _sdmmc_storage_check_cached_card_status(storage->sdmmc);
 }
 
 static int _mmc_storage_switch(sdmmc_storage_t *storage, u32 arg)
 {
-	return _sdmmc_storage_execute_cmd_type1(storage, MMC_SWITCH, arg, 1, R1_SKIP_STATE_CHECK);
+	return _sdmmc_storage_execute_cmd_ex_state(storage, MMC_SWITCH, arg, 1, R1_SKIP_STATE_CHECK);
 }
 
 static int _mmc_storage_switch_buswidth(sdmmc_storage_t *storage, u32 bus_width)
 {
 	if (bus_width == SDMMC_BUS_WIDTH_1)
-		return 1;
+		return 0;
 
 	u32 arg = 0;
 	switch (bus_width)
@@ -617,47 +618,47 @@ static int _mmc_storage_switch_buswidth(sdmmc_storage_t *storage, u32 bus_width)
 		break;
 	}
 
-	if (_mmc_storage_switch(storage, arg))
-		if (_sdmmc_storage_check_status(storage))
+	if (!_mmc_storage_switch(storage, arg))
+		if (!_sdmmc_storage_check_status(storage))
 		{
 			sdmmc_set_bus_width(storage->sdmmc, bus_width);
 
-			return 1;
+			return 0;
 		}
 
-	return 0;
+	return 1;
 }
 
 static int _mmc_storage_enable_HS(sdmmc_storage_t *storage, bool check_sts_before_clk_setup)
 {
-	if (!_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_HS_TIMING, EXT_CSD_TIMING_HS)))
-		return 0;
+	if (_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_HS_TIMING, EXT_CSD_TIMING_HS)))
+		return 1;
 
-	if (check_sts_before_clk_setup && !_sdmmc_storage_check_status(storage))
-		return 0;
+	if (check_sts_before_clk_setup && _sdmmc_storage_check_status(storage))
+		return 1;
 
-	if (!sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_MMC_HS52))
-		return 0;
+	if (sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_MMC_HS52))
+		return 1;
 
 	DPRINTF("[MMC] switched to HS52\n");
 	storage->csd.busspeed = 52;
 
-	if (check_sts_before_clk_setup || _sdmmc_storage_check_status(storage))
-		return 1;
+	if (check_sts_before_clk_setup || !_sdmmc_storage_check_status(storage))
+		return 0;
 
-	return 0;
+	return 1;
 }
 
 static int _mmc_storage_enable_HS200(sdmmc_storage_t *storage)
 {
-	if (!_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_HS_TIMING, EXT_CSD_TIMING_HS200)))
-		return 0;
+	if (_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_HS_TIMING, EXT_CSD_TIMING_HS200)))
+		return 1;
 
-	if (!sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_MMC_HS200))
-		return 0;
+	if (sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_MMC_HS200))
+		return 1;
 
-	if (!sdmmc_tuning_execute(storage->sdmmc, SDHCI_TIMING_MMC_HS200, MMC_SEND_TUNING_BLOCK_HS200))
-		return 0;
+	if (sdmmc_tuning_execute(storage->sdmmc, SDHCI_TIMING_MMC_HS200, MMC_SEND_TUNING_BLOCK_HS200))
+		return 1;
 
 	DPRINTF("[MMC] switched to HS200\n");
 	storage->csd.busspeed = 200;
@@ -667,22 +668,22 @@ static int _mmc_storage_enable_HS200(sdmmc_storage_t *storage)
 
 static int _mmc_storage_enable_HS400(sdmmc_storage_t *storage)
 {
-	if (!_mmc_storage_enable_HS200(storage))
-		return 0;
+	if (_mmc_storage_enable_HS200(storage))
+		return 1;
 
 	sdmmc_save_tap_value(storage->sdmmc);
 
-	if (!_mmc_storage_enable_HS(storage, false))
-		return 0;
+	if (_mmc_storage_enable_HS(storage, false))
+		return 1;
 
-	if (!_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_BUS_WIDTH, EXT_CSD_DDR_BUS_WIDTH_8)))
-		return 0;
+	if (_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_BUS_WIDTH, EXT_CSD_DDR_BUS_WIDTH_8)))
+		return 1;
 
-	if (!_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_HS_TIMING, EXT_CSD_TIMING_HS400)))
-		return 0;
+	if (_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_HS_TIMING, EXT_CSD_TIMING_HS400)))
+		return 1;
 
-	if (!sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_MMC_HS400))
-		return 0;
+	if (sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_MMC_HS400))
+		return 1;
 
 	DPRINTF("[MMC] switched to HS400\n");
 	storage->csd.busspeed = 400;
@@ -711,14 +712,14 @@ hs52_mode:
 	if (card_type & EXT_CSD_CARD_TYPE_HS_52)
 		return _mmc_storage_enable_HS(storage, true);
 
-	return 1;
+	return 0;
 }
 
 /*
 static int _mmc_storage_enable_auto_bkops(sdmmc_storage_t *storage)
 {
-	if (!_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_SET_BITS, EXT_CSD_BKOPS_EN, EXT_CSD_AUTO_BKOPS_MASK)))
-		return 0;
+	if (_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_SET_BITS, EXT_CSD_BKOPS_EN, EXT_CSD_BKOPS_AUTO)))
+		return 1;
 
 	return _sdmmc_storage_check_status(storage);
 }
@@ -732,70 +733,70 @@ int sdmmc_storage_init_mmc(sdmmc_storage_t *storage, sdmmc_t *sdmmc, u32 bus_wid
 
 	DPRINTF("[MMC]-[init: bus: %d, type: %d]\n", bus_width, type);
 
-	if (!sdmmc_init(sdmmc, SDMMC_4, SDMMC_POWER_1_8, SDMMC_BUS_WIDTH_1, SDHCI_TIMING_MMC_ID))
-		return 0;
+	if (sdmmc_init(sdmmc, SDMMC_4, SDMMC_POWER_1_8, SDMMC_BUS_WIDTH_1, SDHCI_TIMING_MMC_ID))
+		return 1;
 	DPRINTF("[MMC] after init\n");
 
 	// Wait 1ms + 74 cycles.
 	usleep(1000 + (74 * 1000 + sdmmc->card_clock - 1) / sdmmc->card_clock);
 
-	if (!_sdmmc_storage_go_idle_state(storage))
-		return 0;
+	if (_sdmmc_storage_go_idle_state(storage))
+		return 1;
 	DPRINTF("[MMC] went to idle state\n");
 
-	if (!_mmc_storage_get_op_cond(storage, SDMMC_POWER_1_8))
-		return 0;
+	if (_mmc_storage_get_op_cond(storage, SDMMC_POWER_1_8))
+		return 1;
 	DPRINTF("[MMC] got op cond\n");
 
-	if (!_sdmmc_storage_get_cid(storage))
-		return 0;
+	if (_sdmmc_storage_get_cid(storage))
+		return 1;
 	DPRINTF("[MMC] got cid\n");
 
-	if (!_mmc_storage_set_relative_addr(storage))
-		return 0;
+	if (_mmc_storage_set_relative_addr(storage))
+		return 1;
 	DPRINTF("[MMC] set relative addr\n");
 
-	if (!_sdmmc_storage_get_csd(storage))
-		return 0;
+	if (_sdmmc_storage_get_csd(storage))
+		return 1;
 	DPRINTF("[MMC] got csd\n");
 	_mmc_storage_parse_csd(storage);
 
-	if (!sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_MMC_LS26))
-		return 0;
+	if (sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_MMC_LS26))
+		return 1;
 	DPRINTF("[MMC] after setup clock\n");
 
-	if (!_sdmmc_storage_select_card(storage))
-		return 0;
+	if (_sdmmc_storage_select_card(storage))
+		return 1;
 	DPRINTF("[MMC] card selected\n");
 
-	if (!_sdmmc_storage_set_blocklen(storage, EMMC_BLOCKSIZE))
-		return 0;
+	if (_sdmmc_storage_set_blocklen(storage, EMMC_BLOCKSIZE))
+		return 1;
 	DPRINTF("[MMC] set blocklen to EMMC_BLOCKSIZE\n");
 
 	// Check system specification version, only version 4.0 and later support below features.
 	if (storage->csd.mmca_vsn < CSD_SPEC_VER_4)
 		goto done;
 
-	if (!_mmc_storage_switch_buswidth(storage, bus_width))
-		return 0;
+	if (_mmc_storage_switch_buswidth(storage, bus_width))
+		return 1;
 	DPRINTF("[MMC] switched buswidth\n");
 
-	if (!mmc_storage_get_ext_csd(storage, (u8 *)SDMMC_UPPER_BUFFER))
-		return 0;
+	if (mmc_storage_get_ext_csd(storage))
+		return 1;
 	DPRINTF("[MMC] got ext_csd\n");
 
 	_mmc_storage_parse_cid(storage); // This needs to be after csd and ext_csd.
 
 /*
-	if (storage->ext_csd.bkops & 0x1 && !(storage->ext_csd.bkops_en & EXT_CSD_AUTO_BKOPS_MASK))
+	if (storage->cid.manfid == 0x11 && storage->ext_csd.bkops && !(storage->ext_csd.bkops_en & EXT_CSD_BKOPS_AUTO))
 	{
 		_mmc_storage_enable_auto_bkops(storage);
 		DPRINTF("[MMC] BKOPS enabled\n");
 	}
 */
 
-	if (!_mmc_storage_enable_highspeed(storage, storage->ext_csd.card_type, type))
-		return 0;
+	if (_mmc_storage_enable_highspeed(storage, storage->ext_csd.card_type, type))
+		return 1;
 	DPRINTF("[MMC] successfully switched to HS mode\n");
 
 	sdmmc_card_clock_powersave(storage->sdmmc, SDMMC_POWER_SAVE_ENABLE);
@@ -803,20 +804,20 @@ int sdmmc_storage_init_mmc(sdmmc_storage_t *storage, sdmmc_t *sdmmc, u32 bus_wid
 done:
 	storage->initialized = 1;
 
-	return 1;
+	return 0;
 }
 
 int sdmmc_storage_set_mmc_partition(sdmmc_storage_t *storage, u32 partition)
 {
-	if (!_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_PART_CONFIG, partition)))
-		return 0;
+	if (_mmc_storage_switch(storage, SDMMC_SWITCH(MMC_SWITCH_MODE_WRITE_BYTE, EXT_CSD_PART_CONFIG, partition)))
+		return 1;
 
-	if (!_sdmmc_storage_check_status(storage))
-		return 0;
+	if (_sdmmc_storage_check_status(storage))
+		return 1;
 
 	storage->partition = partition;
 
-	return 1;
+	return 0;
 }
 
 /*
@@ -826,18 +827,18 @@ int sdmmc_storage_set_mmc_partition(sdmmc_storage_t *storage, u32 partition)
 static int _sd_storage_execute_app_cmd(sdmmc_storage_t *storage, u32 expected_state, u32 mask, sdmmc_cmd_t *cmdbuf, sdmmc_req_t *req, u32 *blkcnt_out)
 {
 	u32 tmp;
-	if (!_sdmmc_storage_execute_cmd_type1_ex(storage, &tmp, MMC_APP_CMD, storage->rca << 16, 0, expected_state, mask))
-		return 0;
+	if (_sdmmc_storage_execute_cmd_ex_masked(storage, &tmp, MMC_APP_CMD, storage->rca << 16, 0, expected_state, mask))
+		return 1;
 
 	return sdmmc_execute_cmd(storage->sdmmc, cmdbuf, req, blkcnt_out);
 }
 
-static int _sd_storage_execute_app_cmd_type1(sdmmc_storage_t *storage, u32 *resp, u32 cmd, u32 arg, u32 check_busy, u32 expected_state)
+static int _sd_storage_execute_app_cmd_tran(sdmmc_storage_t *storage, u32 cmd, u32 arg)
 {
-	if (!_sdmmc_storage_execute_cmd_type1(storage, MMC_APP_CMD, storage->rca << 16, 0, R1_STATE_TRAN))
-		return 0;
+	if (_sdmmc_storage_execute_cmd_ex_state(storage, MMC_APP_CMD, storage->rca << 16, 0, R1_STATE_TRAN))
+		return 1;
 
-	return _sdmmc_storage_execute_cmd_type1_ex(storage, resp, cmd, arg, check_busy, expected_state, 0);
+	return _sdmmc_storage_execute_cmd_ex_state(storage, cmd, arg, 0, R1_STATE_TRAN);
 }
 
 #ifdef SDMMC_DEBUG_PRINT_SD_REGS
@@ -896,23 +897,23 @@ void _sd_storage_debug_print_csd(const u32 *raw_csd)
 
 void _sd_storage_debug_print_scr(const u32 *raw_scr)
 {
-	u32 resp[4];
-	memcpy(&resp[2], raw_scr, 8);
+	u32 scr[4];
+	memcpy(&scr[2], raw_scr, 8);
 
 	gfx_printf("\n");
 
-	gfx_printf("SCR_STRUCTURE:         %X\n",   unstuff_bits(resp, 60, 4));
-	gfx_printf("SD_SPEC:               %X\n",   unstuff_bits(resp, 56, 4));
-	gfx_printf("DATA_STAT_AFTER_ERASE: %X\n",   unstuff_bits(resp, 55, 1));
-	gfx_printf("SD_SECURITY:           %X\n",   unstuff_bits(resp, 52, 3));
-	gfx_printf("SD_BUS widths:         %X\n",   unstuff_bits(resp, 48, 4));
-	gfx_printf("SD_SPEC3:              %X\n",   unstuff_bits(resp, 47, 1));
-	gfx_printf("EX_SECURITY:           %X\n",   unstuff_bits(resp, 43, 4));
-	gfx_printf("SD_SPEC4:              %X\n",   unstuff_bits(resp, 42, 1));
-	gfx_printf("SD_SPECX:              %X\n",   unstuff_bits(resp, 38, 4));
-	gfx_printf("CMD_SUPPORT:           %X\n",   unstuff_bits(resp, 32, 4));
-	gfx_printf("VENDOR:                %08X\n", unstuff_bits(resp, 0, 32));
-	gfx_printf("--RSVD--               %X\n",   unstuff_bits(resp, 36, 2));
+	gfx_printf("SCR_STRUCTURE:         %X\n",   unstuff_bits(scr, 60, 4));
+	gfx_printf("SD_SPEC:               %X\n",   unstuff_bits(scr, 56, 4));
+	gfx_printf("DATA_STAT_AFTER_ERASE: %X\n",   unstuff_bits(scr, 55, 1));
+	gfx_printf("SD_SECURITY:           %X\n",   unstuff_bits(scr, 52, 3));
+	gfx_printf("SD_BUS widths:         %X\n",   unstuff_bits(scr, 48, 4));
+	gfx_printf("SD_SPEC3:              %X\n",   unstuff_bits(scr, 47, 1));
+	gfx_printf("EX_SECURITY:           %X\n",   unstuff_bits(scr, 43, 4));
+	gfx_printf("SD_SPEC4:              %X\n",   unstuff_bits(scr, 42, 1));
+	gfx_printf("SD_SPECX:              %X\n",   unstuff_bits(scr, 38, 4));
+	gfx_printf("CMD_SUPPORT:           %X\n",   unstuff_bits(scr, 32, 4));
+	gfx_printf("VENDOR:                %08X\n", unstuff_bits(scr, 0, 32));
+	gfx_printf("--RSVD--               %X\n",   unstuff_bits(scr, 36, 2));
 }
 
 void _sd_storage_debug_print_ssr(const u8 *raw_ssr)
@@ -950,11 +951,6 @@ void _sd_storage_debug_print_ssr(const u8 *raw_ssr)
 	gfx_printf("DISCARD_SUPPORT:       %X\n",   unstuff_bits(raw_ssr1, 313, 1));
 	gfx_printf("FULE_SUPPORT:          %X\n",   unstuff_bits(raw_ssr1, 312, 1));
 
-	gfx_printf("--RSVD--               %02X %X %02X %02X %04X\n",
-		unstuff_bits(raw_ssr0, 496, 6),   unstuff_bits(raw_ssr0, 424, 4),
-		unstuff_bits(raw_ssr1, 378, 6),   unstuff_bits(raw_ssr1, 340, 6),
-		unstuff_bits(raw_ssr1, 314, 14));
-
 	gfx_printf("VENDOR_1: %06X   %08X\n",
 		unstuff_bits(raw_ssr1, 288, 24),  unstuff_bits(raw_ssr1, 256, 32));
 
@@ -964,87 +960,180 @@ void _sd_storage_debug_print_ssr(const u8 *raw_ssr)
 	gfx_printf("VENDOR_3: %08X %08X %08X %08X\n",
 		unstuff_bits(raw_ssr3, 96 - 0, 32),     unstuff_bits(raw_ssr3, 64, 32),
 		unstuff_bits(raw_ssr3, 32 - 0, 32),     unstuff_bits(raw_ssr3, 0, 32));
+
+	gfx_printf("--RSVD--               %02X %X %02X %02X %04X\n",
+		unstuff_bits(raw_ssr0, 496, 6),   unstuff_bits(raw_ssr0, 424, 4),
+		unstuff_bits(raw_ssr1, 378, 6),   unstuff_bits(raw_ssr1, 340, 6),
+		unstuff_bits(raw_ssr1, 314, 14));
 }
 #endif
 
-static int _sd_storage_send_if_cond(sdmmc_storage_t *storage, bool *is_sdsc)
+void sd_storage_get_vendor_info(sdmmc_storage_t *storage, sd_vendor_info_t *info)
+{
+	// CID Reserved.
+	info->cid_rsvd = storage->cid.rsvd;
+
+	// CSD Reserved.
+	info->csd_rsvd8_9     = unstuff_bits((u32 *)storage->raw_csd,   8, 2);
+	info->csd_rsvd16_20   = unstuff_bits((u32 *)storage->raw_csd,  16, 5);
+	info->csd_rsvd29_30   = unstuff_bits((u32 *)storage->raw_csd,  29, 2);
+	info->csd_rsvd120_125 = unstuff_bits((u32 *)storage->raw_csd, 120, 6);
+
+	// SCR Vendor and Reserved.
+	u32 scr[4];
+	memcpy(&scr[2], storage->raw_scr, 8);
+	info->scr_vendor = storage->scr.vendor;
+	info->scr_rsvd   = unstuff_bits(scr, 36, 2);
+
+	// SSR Vendor and Reserved.
+	u32 raw_ssr0[4]; // 511:384.
+	u32 raw_ssr1[4]; // 383:256.
+	u32 raw_ssr2[4]; // 255:128.
+	u32 raw_ssr3[4]; // 127:0.
+	memcpy(raw_ssr0, &storage->raw_ssr[0],  16);
+	memcpy(raw_ssr1, &storage->raw_ssr[16], 16);
+	memcpy(raw_ssr2, &storage->raw_ssr[32], 16);
+	memcpy(raw_ssr3, &storage->raw_ssr[48], 16);
+	info->ssr_vendor0_31    = unstuff_bits(raw_ssr3,   0, 32);
+	info->ssr_vendor32_63   = unstuff_bits(raw_ssr3,  32, 32);
+	info->ssr_vendor64_95   = unstuff_bits(raw_ssr3,  64, 32);
+	info->ssr_vendor96_127  = unstuff_bits(raw_ssr3,  96, 32);
+	info->ssr_vendor128_159 = unstuff_bits(raw_ssr2, 128, 32);
+	info->ssr_vendor160_191 = unstuff_bits(raw_ssr2, 160, 32);
+	info->ssr_vendor192_223 = unstuff_bits(raw_ssr2, 192, 32);
+	info->ssr_vendor224_255 = unstuff_bits(raw_ssr2, 224, 32);
+	info->ssr_vendor256_287 = unstuff_bits(raw_ssr1, 256, 32);
+	info->ssr_vendor288_311 = unstuff_bits(raw_ssr1, 288, 24);
+
+	info->ssr_rsvd314_327 = unstuff_bits(raw_ssr1, 314, 14);
+	info->ssr_rsvd340_345 = unstuff_bits(raw_ssr1, 340,  6);
+	info->ssr_rsvd378_383 = unstuff_bits(raw_ssr1, 378,  6);
+	info->ssr_rsvd424_427 = unstuff_bits(raw_ssr0, 424,  4);
+	info->ssr_rsvd496_501 = unstuff_bits(raw_ssr0, 496,  6);
+}
+
+int sd_storage_get_ext_reg(sdmmc_storage_t *storage, u8 fno, u8 page, u16 address, u32 len, void *buf)
+{
+	if (!(storage->scr.cmds & BIT(2)))
+		return 1;
+
+	sdmmc_cmd_t cmdbuf;
+
+	u32 arg = fno << 27 | page << 18 | address << 9 | (len - 1);
+
+	sdmmc_init_cmd(&cmdbuf, SD_READ_EXTR_SINGLE, arg, SDMMC_RSP_TYPE_1, 0);
+
+	sdmmc_req_t reqbuf;
+	reqbuf.buf = buf;
+	reqbuf.blksize = SDMMC_DAT_BLOCKSIZE;
+	reqbuf.num_sectors = 1;
+	reqbuf.is_write = 0;
+	reqbuf.is_multi_block = 0;
+	reqbuf.is_auto_stop_trn = 0;
+
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
+		return 1;
+
+	return _sdmmc_storage_check_cached_card_status(storage->sdmmc);
+}
+
+static int _sd_storage_send_if_cond(sdmmc_storage_t *storage, bool *is_sd_v1)
 {
 	sdmmc_cmd_t cmdbuf;
-	u16 vhd_pattern = SD_VHS_27_36 | 0xAA;
-	sdmmc_init_cmd(&cmdbuf, SD_SEND_IF_COND, vhd_pattern, SDMMC_RSP_TYPE_7, 0);
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
+	u16 icr = SD_ICR_PCIE | SD_ICR_VHS_27_36 | SD_ICR_PATTERN;
+	sdmmc_init_cmd(&cmdbuf, SD_SEND_IF_COND, icr, SDMMC_RSP_TYPE_7, 0);
+
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
 	{
-		// The SD Card is version 1.X (SDSC) if there is no response.
+		// The SD Card is version 1.XX if there is no response.
 		if (storage->sdmmc->error_sts == SDHCI_ERR_INT_CMD_TIMEOUT)
 		{
-			*is_sdsc = 1;
-			return 1;
+			*is_sd_v1 = true;
+
+			return 0;
 		}
+
+		return 1;
+	}
+
+	// For version >= 2.0, parse results.
+	u32 ricr = 0;
+	sdmmc_get_cached_rsp(storage->sdmmc, &ricr, SDMMC_RSP_TYPE_7);
+
+#ifdef SDMMC_DEBUG_PRINT_SD_REGS
+	gfx_printf("ICR:                   %08X -> %08X\n", icr, ricr);
+#endif
+
+	// Check if VHS was accepted and pattern was properly returned.
+	if ((ricr & 0xFFF) == (icr & 0xFFF))
+	{
+		storage->has_pcie = ricr & SD_ICR_PCIE;
 
 		return 0;
 	}
 
-	// For Card version >= 2.0, parse results.
-	u32 resp = 0;
-	sdmmc_get_cached_rsp(storage->sdmmc, &resp, SDMMC_RSP_TYPE_7);
-
-	// Check if VHD was accepted and pattern was properly returned.
-	if ((resp & 0xFFF) == vhd_pattern)
-		return 1;
-
-	return 0;
+	return 1;
 }
 
-static int _sd_storage_get_op_cond_once(sdmmc_storage_t *storage, u32 *cond, bool is_sdsc, int bus_uhs_support)
+static int _sd_storage_send_op_cond(sdmmc_storage_t *storage, u32 *rocr, u32 ocr, bool is_sd_v1)
 {
 	sdmmc_cmd_t cmdbuf;
-	// Support for Current > 150mA.
-	u32 arg = !is_sdsc ? SD_OCR_XPC : 0;
-	// Support for handling block-addressed SDHC cards.
-	arg	|= !is_sdsc ? SD_OCR_CCS : 0;
-	// Support for 1.8V signaling.
-	arg |= (bus_uhs_support && !is_sdsc) ? SD_OCR_S18R : 0;
-	// Support for 3.3V power supply (VDD1).
-	arg |= SD_OCR_VDD_32_33;
 
-	sdmmc_init_cmd(&cmdbuf, SD_APP_OP_COND, arg, SDMMC_RSP_TYPE_3, 0);
+	sdmmc_init_cmd(&cmdbuf, SD_APP_SD_SEND_OP_COND, ocr, SDMMC_RSP_TYPE_3, 0);
 
-	if (!_sd_storage_execute_app_cmd(storage, R1_SKIP_STATE_CHECK, is_sdsc ? R1_ILLEGAL_COMMAND : 0, &cmdbuf, NULL, NULL))
-		return 0;
+	if (_sd_storage_execute_app_cmd(storage, R1_SKIP_STATE_CHECK, is_sd_v1 ? R1_ILLEGAL_COMMAND : 0, &cmdbuf, NULL, NULL))
+		return 1;
 
-	return sdmmc_get_cached_rsp(storage->sdmmc, cond, SDMMC_RSP_TYPE_3);
+	return sdmmc_get_cached_rsp(storage->sdmmc, rocr, SDMMC_RSP_TYPE_3);
 }
 
-static int _sd_storage_get_op_cond(sdmmc_storage_t *storage, bool is_sdsc, int bus_uhs_support)
+static int _sd_storage_get_op_cond(sdmmc_storage_t *storage, bool is_sd_v1, int lv_support)
 {
 	u32 timeout = get_tmr_ms() + 1500;
 
+	// Host in 3.3V power supply (VDD1).
+	u32 ocr = SD_OCR_VDD_32_33;
+
+	if (!is_sd_v1)
+	{
+		// Support for Current > 150mA.
+		ocr |= SD_OCR_XPC;
+		// Support for handling block-addressed SDHC/SDXC/SDUC cards.
+		ocr	|= SD_OCR_HCS;
+		// Support and request 1.8V signaling.
+		ocr |= lv_support ? SD_OCR_S18R : 0;
+	}
+
 	while (true)
 	{
-		u32 cond = 0;
-		if (!_sd_storage_get_op_cond_once(storage, &cond, is_sdsc, bus_uhs_support))
+		u32 rocr = 0;
+		if (_sd_storage_send_op_cond(storage, &rocr, ocr, is_sd_v1))
 			break;
 
 		// Check if power up is done.
-		if (cond & SD_OCR_BUSY)
+		if (rocr & SD_OCR_BUSY)
 		{
-			DPRINTF("[SD] op cond: %08X, lv: %d\n", cond, bus_uhs_support);
+#ifdef SDMMC_DEBUG_PRINT_SD_REGS
+			gfx_printf("ROCR:                  %08X (%d)\n", rocr, lv_support);
+#else
+			DPRINTF("[SD] rocr: %08X, lv: %d\n", rocr, lv_support);
+#endif
 
-			// Check if card is high capacity.
-			if (cond & SD_OCR_CCS)
-				storage->has_sector_access = 1;
+			// Check if card is higher capacity.
+			if (rocr & SD_OCR_CCS)
+				storage->has_sector_access = 1; // Non-SDUC.
 
-			// Check if card supports 1.8V signaling.
-			if (cond & SD_ROCR_S18A && bus_uhs_support && !storage->is_low_voltage)
+			// Check if card accepted 1.8V signaling.
+			if (rocr & SD_OCR_S18A && lv_support)
 			{
 				// Switch to 1.8V signaling.
-				if (_sdmmc_storage_execute_cmd_type1(storage, SD_SWITCH_VOLTAGE, 0, 0, R1_STATE_READY))
+				if (!_sdmmc_storage_execute_cmd_ex_state(storage, SD_VOLTAGE_SWITCH, 0, 0, R1_STATE_READY))
 				{
-					if (!sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_UHS_SDR12))
-						return 0;
+					if (sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_UHS_SDR12))
+						return 1;
 
-					if (!sdmmc_enable_low_voltage(storage->sdmmc))
-						return 0;
+					if (sdmmc_enable_low_voltage(storage->sdmmc))
+						return 1;
 
 					storage->is_low_voltage = 1;
 
@@ -1056,14 +1145,14 @@ static int _sd_storage_get_op_cond(sdmmc_storage_t *storage, bool is_sdsc, int b
 				DPRINTF("[SD] no low voltage support\n");
 			}
 
-			return 1;
+			return 0;
 		}
 		if (get_tmr_ms() > timeout)
 			break;
 		msleep(10); // Needs to be at least 10ms for some SD Cards
 	}
 
-	return 0;
+	return 1;
 }
 
 static int _sd_storage_get_rca(sdmmc_storage_t *storage)
@@ -1075,17 +1164,17 @@ static int _sd_storage_get_rca(sdmmc_storage_t *storage)
 
 	while (true)
 	{
-		if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
+		if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, NULL, NULL))
 			break;
 
-		u32 resp = 0;
-		if (!sdmmc_get_cached_rsp(storage->sdmmc, &resp, SDMMC_RSP_TYPE_6))
+		u32 rca = 0;
+		if (sdmmc_get_cached_rsp(storage->sdmmc, &rca, SDMMC_RSP_TYPE_6))
 			break;
 
-		if (resp >> 16)
+		if (rca >> 16)
 		{
-			storage->rca = resp >> 16;
-			return 1;
+			storage->rca = rca >> 16;
+			return 0;
 		}
 
 		if (get_tmr_ms() > timeout)
@@ -1093,38 +1182,80 @@ static int _sd_storage_get_rca(sdmmc_storage_t *storage)
 		usleep(1000);
 	}
 
-	return 0;
+	return 1;
+}
+
+u8 sd_storage_get_scr_sda_ver(sdmmc_storage_t *storage)
+{
+	u8 version = 0;
+
+	u8 sda_spec  = storage->scr.sda_vsn;
+	u8 sda_spec3 = storage->scr.sda_spec & 1;
+	u8 sda_spec4 = (storage->scr.sda_spec >> 1) & 1;
+	u8 sda_specx = storage->scr.sda_spec >> 4;
+
+	switch (sda_spec)
+	{
+	case 0:
+		version = 1;
+		break;
+
+	case 1:
+		version = 1;
+		break;
+
+	case 2:
+		if (!sda_spec3)
+			version = 2;
+		else if (!sda_spec4 && !sda_specx)
+			version = 3;
+		else
+			version = sda_specx + 4;
+		break;
+	}
+
+	return version;
 }
 
 static void _sd_storage_parse_scr(sdmmc_storage_t *storage)
 {
 	// unstuff_bits can parse only 4 u32
-	u32 resp[4];
+	u32 scr[4];
+	u8 sda_spec3 = 0;
+	u8 sda_spec4 = 0;
+	u8 sda_specx = 0;
 
-	memcpy(&resp[2], storage->raw_scr, 8);
+	memcpy(&scr[2], storage->raw_scr, 8);
 
 #ifdef SDMMC_DEBUG_PRINT_SD_REGS
 	_sd_storage_debug_print_scr((u32 *)storage->raw_scr);
 #endif
 
-	storage->scr.sda_vsn = unstuff_bits(resp, 56, 4);
-	storage->scr.bus_widths = unstuff_bits(resp, 48, 4);
+	storage->scr.sda_vsn = unstuff_bits(scr, 56, 4);
+	storage->scr.bus_widths = unstuff_bits(scr, 48, 4);
 
 	// If v2.0 is supported, check if Physical Layer Spec v3.0 is supported.
 	if (storage->scr.sda_vsn == SCR_SPEC_VER_2)
-		storage->scr.sda_spec3 = unstuff_bits(resp, 47, 1);
-	if (storage->scr.sda_spec3)
+		sda_spec3 = unstuff_bits(scr, 47, 1);
+	if (sda_spec3)
 	{
-		u8 sda_spec4 = unstuff_bits(resp, 42, 1);
+		sda_spec4 = unstuff_bits(scr, 42, 1);
+		sda_specx = unstuff_bits(scr, 38, 4);
 		if (sda_spec4)
-			storage->scr.cmds = unstuff_bits(resp, 32, 4);
+			storage->scr.cmds = unstuff_bits(scr, 32, 4);
 		else
-			storage->scr.cmds = unstuff_bits(resp, 32, 2);
+			storage->scr.cmds = unstuff_bits(scr, 32, 2);
 	}
+
+	storage->scr.sda_spec = sda_spec3 | (sda_spec4 << 1) | (sda_specx << 4);
+
+	storage->scr.vendor = unstuff_bits(scr, 0, 32);
 }
 
-int sd_storage_get_scr(sdmmc_storage_t *storage, u8 *buf)
+int sd_storage_get_scr(sdmmc_storage_t *storage)
 {
+	u8 buf[8] __attribute__ ((aligned(SDMMC_ADMA_ADDR_ALIGN)));
+
 	sdmmc_cmd_t cmdbuf;
 	sdmmc_init_cmd(&cmdbuf, SD_APP_SEND_SCR, 0, SDMMC_RSP_TYPE_1, 0);
 
@@ -1136,13 +1267,11 @@ int sd_storage_get_scr(sdmmc_storage_t *storage, u8 *buf)
 	reqbuf.is_multi_block   = 0;
 	reqbuf.is_auto_stop_trn = 0;
 
-	if (!_sd_storage_execute_app_cmd(storage, R1_STATE_TRAN, 0, &cmdbuf, &reqbuf, NULL))
-		return 0;
+	if (_sd_storage_execute_app_cmd(storage, R1_STATE_TRAN, 0, &cmdbuf, &reqbuf, NULL))
+		return 1;
 
-	u32 tmp = 0;
-	sdmmc_get_cached_rsp(storage->sdmmc, &tmp, SDMMC_RSP_TYPE_1);
 	//Prepare buffer for unstuff_bits
-	for (u32 i = 0; i < 8; i+=4)
+	for (u32 i = 0; i < 8; i += 4)
 	{
 		storage->raw_scr[i + 3] = buf[i];
 		storage->raw_scr[i + 2] = buf[i + 1];
@@ -1151,10 +1280,10 @@ int sd_storage_get_scr(sdmmc_storage_t *storage, u8 *buf)
 	}
 	_sd_storage_parse_scr(storage);
 
-	return _sdmmc_storage_check_card_status(tmp);
+	return _sdmmc_storage_check_cached_card_status(storage->sdmmc);
 }
 
-static int _sd_storage_switch_get(sdmmc_storage_t *storage, void *buf)
+static int _sd_storage_switch_get_all(sdmmc_storage_t *storage, void *buf)
 {
 	sdmmc_cmd_t cmdbuf;
 	sdmmc_init_cmd(&cmdbuf, SD_SWITCH, 0xFFFFFF, SDMMC_RSP_TYPE_1, 0);
@@ -1167,12 +1296,10 @@ static int _sd_storage_switch_get(sdmmc_storage_t *storage, void *buf)
 	reqbuf.is_multi_block   = 0;
 	reqbuf.is_auto_stop_trn = 0;
 
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
-		return 0;
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
+		return 1;
 
-	u32 tmp = 0;
-	sdmmc_get_cached_rsp(storage->sdmmc, &tmp, SDMMC_RSP_TYPE_1);
-	return _sdmmc_storage_check_card_status(tmp);
+	return _sdmmc_storage_check_cached_card_status(storage->sdmmc);
 }
 
 static int _sd_storage_switch(sdmmc_storage_t *storage, void *buf, int mode, int group, u32 arg)
@@ -1191,12 +1318,10 @@ static int _sd_storage_switch(sdmmc_storage_t *storage, void *buf, int mode, int
 	reqbuf.is_multi_block   = 0;
 	reqbuf.is_auto_stop_trn = 0;
 
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
-		return 0;
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
+		return 1;
 
-	u32 tmp = 0;
-	sdmmc_get_cached_rsp(storage->sdmmc, &tmp, SDMMC_RSP_TYPE_1);
-	return _sdmmc_storage_check_card_status(tmp);
+	return _sdmmc_storage_check_cached_card_status(storage->sdmmc);
 }
 
 static void _sd_storage_set_power_limit(sdmmc_storage_t *storage, u16 power_limit, u8 *buf)
@@ -1237,26 +1362,26 @@ static void _sd_storage_set_power_limit(sdmmc_storage_t *storage, u16 power_limi
 	}
 }
 
-int _sd_storage_set_driver_type(sdmmc_storage_t *storage, u32 driver, u8 *buf)
+__attribute__ ((unused)) static int _sd_storage_set_driver_type(sdmmc_storage_t *storage, u32 driver, u8 *buf)
 {
-	if (!_sd_storage_switch(storage, buf, SD_SWITCH_CHECK, SD_SWITCH_GRP_DRVSTR, driver))
-		return 0;
+	if (_sd_storage_switch(storage, buf, SD_SWITCH_CHECK, SD_SWITCH_GRP_DRVSTR, driver))
+		return 1;
 
 	u32 driver_out = buf[15] & 0xF;
 	if (driver_out != driver)
-		return 0;
+		return 1;
 	DPRINTF("[SD] supports Driver Strength %d\n", driver);
 
-	if (!_sd_storage_switch(storage, buf, SD_SWITCH_SET, SD_SWITCH_GRP_DRVSTR, driver))
-		return 0;
+	if (_sd_storage_switch(storage, buf, SD_SWITCH_SET, SD_SWITCH_GRP_DRVSTR, driver))
+		return 1;
 
 	if (driver_out != (buf[15] & 0xF))
-		return 0;
+		return 1;
 	DPRINTF("[SD] card accepted Driver Strength %d\n", driver);
 
 	sdmmc_setup_drv_type(storage->sdmmc, driver);
 
-	return 1;
+	return 0;
 }
 
 /*
@@ -1301,97 +1426,110 @@ int _sd_storage_set_driver_type(sdmmc_storage_t *storage, u32 driver, u8 *buf)
 static int _sd_storage_enable_DDR200(sdmmc_storage_t *storage, u8 *buf)
 {
 	u32 cmd_system = UHS_DDR200_BUS_SPEED;
-	if (!_sd_storage_switch(storage, buf, SD_SWITCH_CHECK, SD_SWITCH_GRP_CMDSYS, cmd_system))
-		return 0;
+	if (_sd_storage_switch(storage, buf, SD_SWITCH_CHECK, SD_SWITCH_GRP_CMDSYS, cmd_system))
+		return 1;
 
 	u32 system_out = (buf[16] >> 4) & 0xF;
 	if (system_out != cmd_system)
-		return 0;
+		return 1;
 	DPRINTF("[SD] supports DDR200 mode\n");
 
 	u16 total_pwr_consumption = ((u16)buf[0] << 8) | buf[1];
 	DPRINTF("[SD] max power: %d mW\n", total_pwr_consumption * 3600 / 1000);
 	storage->max_power = total_pwr_consumption;
 
+	// Check if total is low than max and switch.
 	if (total_pwr_consumption <= 800)
 	{
-		if (!_sd_storage_switch(storage, buf, SD_SWITCH_SET, SD_SWITCH_GRP_CMDSYS, cmd_system))
-			return 0;
+		if (_sd_storage_switch(storage, buf, SD_SWITCH_SET, SD_SWITCH_GRP_CMDSYS, cmd_system))
+			return 1;
 
 		if (system_out != ((buf[16] >> 4) & 0xF))
-			return 0;
+			return 1;
 		DPRINTF("[SD] card accepted DDR200\n");
 
-		if (!sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_UHS_DDR200))
-			return 0;
+		if (sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_UHS_DDR200))
+			return 1;
 		DPRINTF("[SD] after setup clock DDR200\n");
 
-		if (!sdmmc_tuning_execute(storage->sdmmc, SDHCI_TIMING_UHS_DDR200, MMC_SEND_TUNING_BLOCK))
-			return 0;
+		if (sdmmc_tuning_execute(storage->sdmmc, SDHCI_TIMING_UHS_DDR200, MMC_SEND_TUNING_BLOCK))
+			return 1;
 		DPRINTF("[SD] after tuning DDR200\n");
 
 		return _sdmmc_storage_check_status(storage);
 	}
 
 	DPRINTF("[SD] card max power over limit\n");
-	return 0;
+	return 1;
 }
 #endif
 
 static int _sd_storage_set_card_bus_speed(sdmmc_storage_t *storage, u32 hs_type, u8 *buf)
 {
-	if (!_sd_storage_switch(storage, buf, SD_SWITCH_CHECK, SD_SWITCH_GRP_ACCESS, hs_type))
-		return 0;
+	if (_sd_storage_switch(storage, buf, SD_SWITCH_CHECK, SD_SWITCH_GRP_ACCESS, hs_type))
+		return 1;
 
 	u32 type_out = buf[16] & 0xF;
 	if (type_out != hs_type)
-		return 0;
+		return 1;
 	DPRINTF("[SD] supports selected (U)HS mode %d\n", buf[16] & 0xF);
 
 	u16 total_pwr_consumption = ((u16)buf[0] << 8) | buf[1];
 	DPRINTF("[SD] max power: %d mW\n", total_pwr_consumption * 3600 / 1000);
 	storage->max_power = total_pwr_consumption;
 
+	// Check if total is low than max and switch.
 	if (total_pwr_consumption <= 800)
 	{
-		if (!_sd_storage_switch(storage, buf, SD_SWITCH_SET, SD_SWITCH_GRP_ACCESS, hs_type))
-			return 0;
+		if (_sd_storage_switch(storage, buf, SD_SWITCH_SET, SD_SWITCH_GRP_ACCESS, hs_type))
+			return 1;
 
 		if (type_out != (buf[16] & 0xF))
-			return 0;
+			return 1;
 
-		return 1;
+		return 0;
 	}
 
 	DPRINTF("[SD] card max power over limit\n");
-	return 0;
+	return 1;
 }
 
 int sd_storage_get_fmodes(sdmmc_storage_t *storage, u8 *buf, sd_func_modes_t *fmodes)
 {
 	if (!buf)
-		buf = (u8 *)SDMMC_UPPER_BUFFER;
+		buf = (u8 *)SDMMC_ALT_DMA_BUFFER;
 
-	if (!_sd_storage_switch_get(storage, buf))
-		return 0;
+	if (_sd_storage_switch_get_all(storage, buf))
+		return 1;
+
+#ifdef SDMMC_DEBUG_PRINT_SD_REGS
+	gfx_printf("\nFMD:       %04X %04X %04X %04X %04X %04X\n",
+		buf[13] | (buf[12] << 8),
+		buf[11] | (buf[10] << 8),
+		buf[9]  | (buf[8]  << 8),
+		buf[7]  | (buf[6]  << 8),
+		buf[5]  | (buf[4]  << 8),
+		buf[3]  | (buf[2]  << 8));
+#endif
 
 	fmodes->access_mode     = buf[13] | (buf[12] << 8);
 	fmodes->cmd_system      = buf[11] | (buf[10] << 8);
 	fmodes->driver_strength = buf[9]  | (buf[8]  << 8);
 	fmodes->power_limit     = buf[7]  | (buf[6]  << 8);
 
-	return 1;
+	return 0;
 }
 
-static int _sd_storage_enable_uhs_low_volt(sdmmc_storage_t *storage, u32 type, u8 *buf)
+static int _sd_storage_set_uhs_bus_speed(sdmmc_storage_t *storage, u32 type)
 {
 	sd_func_modes_t fmodes;
+	u8 *buf = storage->raw_ext_csd;
 
 	if (sdmmc_get_bus_width(storage->sdmmc) != SDMMC_BUS_WIDTH_4)
-		return 0;
+		return 1;
 
-	if (!sd_storage_get_fmodes(storage, buf, &fmodes))
-		return 0;
+	if (sd_storage_get_fmodes(storage, buf, &fmodes))
+		return 1;
 
 #ifdef BDK_SDMMC_UHS_DDR200_SUPPORT
 	DPRINTF("[SD] access: %02X, power: %02X, cmd: %02X\n", fmodes.access_mode, fmodes.power_limit, fmodes.cmd_system);
@@ -1467,7 +1605,7 @@ static int _sd_storage_enable_uhs_low_volt(sdmmc_storage_t *storage, u32 type, u
 	default:
 		DPRINTF("[SD] bus speed defaulted to SDR12\n");
 		storage->csd.busspeed = 12;
-		return 1;
+		return 0; // Already set.
 	}
 
 	// Try to raise the power limit to let the card perform better.
@@ -1475,40 +1613,100 @@ static int _sd_storage_enable_uhs_low_volt(sdmmc_storage_t *storage, u32 type, u
 		_sd_storage_set_power_limit(storage, fmodes.power_limit, buf);
 
 	// Setup and set selected card and bus speed.
-	if (!_sd_storage_set_card_bus_speed(storage, hs_type, buf))
-		return 0;
+	if (_sd_storage_set_card_bus_speed(storage, hs_type, buf))
+		return 1;
 	DPRINTF("[SD] card accepted UHS\n");
 
-	if (!sdmmc_setup_clock(storage->sdmmc, type))
-		return 0;
+	if (sdmmc_setup_clock(storage->sdmmc, type))
+		return 1;
 	DPRINTF("[SD] after setup clock\n");
 
-	if (!sdmmc_tuning_execute(storage->sdmmc, type, MMC_SEND_TUNING_BLOCK))
-		return 0;
+	if (sdmmc_tuning_execute(storage->sdmmc, type, SD_SEND_TUNING_BLOCK))
+		return 1;
 	DPRINTF("[SD] after tuning\n");
 
 	return _sdmmc_storage_check_status(storage);
 }
 
-static int _sd_storage_enable_hs_high_volt(sdmmc_storage_t *storage, u8 *buf)
+static int _sd_storage_set_hs25_bus_speed(sdmmc_storage_t *storage)
 {
 	sd_func_modes_t fmodes;
+	u8 *buf = storage->raw_ext_csd;
 
-	if (!sd_storage_get_fmodes(storage, buf, &fmodes))
-		return 0;
+	if (sd_storage_get_fmodes(storage, buf, &fmodes))
+		return 1;
 
 	DPRINTF("[SD] access: %02X, power: %02X\n", fmodes.access_mode, fmodes.power_limit);
 
+	// No support, return success.
 	if (!(fmodes.access_mode & SD_MODE_HIGH_SPEED))
+		return 0;
+
+	if (_sd_storage_set_card_bus_speed(storage, HIGH_SPEED_BUS_SPEED, buf))
 		return 1;
 
-	if (!_sd_storage_set_card_bus_speed(storage, HIGH_SPEED_BUS_SPEED, buf))
-		return 0;
-
-	if (!_sdmmc_storage_check_status(storage))
-		return 0;
+	if (_sdmmc_storage_check_status(storage))
+		return 1;
 
 	return sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_SD_HS25);
+}
+
+bool sd_storage_get_ddr200_support(sdmmc_storage_t *storage)
+{
+	// DDR200 CID reserved/SCR vendor (hex):
+	// Samsung 0x1B: A 00000000
+	// Longsys 0xAD: A 00000000
+	// Kowin   0x22: 7 33333039 33333039 SMART?
+	// Phison  0x27: 0 01196432 Byte2: DDR2XX (25 == DDR225)?
+	// Taishin 0x9F: 0 01006432
+
+	// Non-DDR200:
+	// Phison  0x27: 0 01000000
+	// Taishin 0x9F: 0 01000000
+	// Taishin 0x9F: 7 33333039 Supported but slow nand?
+
+	sd_func_modes_t fmodes = { 0 };
+
+	if (sd_storage_get_fmodes(storage, storage->raw_ext_csd, &fmodes))
+		return false;
+
+	// Introduced first in 2018 via Sandisk Quickflow.
+	if (storage->cid.year < 2018)
+		return false;
+
+	// No DDR200 if no SDR104.
+	if (!(fmodes.access_mode & SD_MODE_UHS_SDR104))
+		return false;
+
+	// Can't enter DDR200 mode without Vendor Command System mode.
+	if (!(fmodes.cmd_system & SD_CMD_SYSTEM_VND))
+		return false;
+
+	// Assume no support if 4.10 and lower. (Should be < 6?)
+	if (sd_storage_get_scr_sda_ver(storage) < 5)
+		return false;
+
+	// Sandisk.
+	if (storage->cid.manfid == 0x03)
+	{
+		// 0x80: DDR200, 0x85: DDR225, 0x86: DDR250? 0x87:DDR275?
+		if (storage->cid.prv >= 0x80)
+			return true;
+		else
+			return false;
+	}
+
+	// CID Reserved bits.
+	if (storage->cid.rsvd == 0xA || // Samsung / Longsys.
+		storage->cid.rsvd == 0x7)   // Taishin A / Kowin.
+		return true;
+
+	// SCR Vendor bits.
+	u32 scr_vnd = storage->scr.vendor & 0xFFFF;
+	if (scr_vnd == 0x6432) // Phison / Taishin B. "d2".
+		return true;
+
+	return false;
 }
 
 u32 sd_storage_get_ssr_au(sdmmc_storage_t *storage)
@@ -1599,18 +1797,18 @@ int sd_storage_parse_perf_enhance(sdmmc_storage_t *storage, u8 fno, u8 page, u16
 	storage->ser.cache = (storage->ssr.perf_enhance >> 2) & BIT(0);
 	storage->ser.cmdq  = (storage->ssr.perf_enhance >> 3) & 0x1F;
 
-	if (!sd_storage_get_ext_reg(storage, fno, page, offset, 512, buf))
+	if (sd_storage_get_ext_reg(storage, fno, page, offset, 512, buf))
 	{
 		storage->ser.cache_ext = 0;
 		storage->ser.cmdq_ext  = 0;
 
-		return 0;
+		return 1;
 	}
 
 	storage->ser.cache_ext = buf[4] & BIT(0);
 	storage->ser.cmdq_ext  = buf[6] & 0x1F;
 
-	return 1;
+	return 0;
 }
 
 static void _sd_storage_parse_ext_reg(sdmmc_storage_t *storage, u8 *buf, u16 *addr_next)
@@ -1660,7 +1858,7 @@ void sd_storage_get_ext_regs(sdmmc_storage_t *storage, u8 *buf)
 		return;
 	}
 
-	if (!sd_storage_get_ext_reg(storage, 0, 0, 0, 512, buf))
+	if (sd_storage_get_ext_reg(storage, 0, 0, 0, 512, buf))
 	{
 		DREGPRINTF("Failed to get general info!\n");
 		return;
@@ -1673,9 +1871,11 @@ void sd_storage_get_ext_regs(sdmmc_storage_t *storage, u8 *buf)
 		_sd_storage_parse_ext_reg(storage, buf, &addr_next);
 }
 
-int sd_storage_get_ssr(sdmmc_storage_t *storage, u8 *buf)
+int sd_storage_get_ssr(sdmmc_storage_t *storage)
 {
 	sdmmc_cmd_t cmdbuf;
+	u8 *buf = storage->raw_ext_csd;
+
 	sdmmc_init_cmd(&cmdbuf, SD_APP_SD_STATUS, 0, SDMMC_RSP_TYPE_1, 0);
 
 	sdmmc_req_t reqbuf;
@@ -1689,14 +1889,11 @@ int sd_storage_get_ssr(sdmmc_storage_t *storage, u8 *buf)
 	if (!(storage->csd.cmdclass & CCC_APP_SPEC))
 	{
 		DPRINTF("[SD] ssr: Not supported\n");
-		return 0;
+		return 1;
 	}
 
-	if (!_sd_storage_execute_app_cmd(storage, R1_STATE_TRAN, 0, &cmdbuf, &reqbuf, NULL))
-		return 0;
-
-	u32 tmp = 0;
-	sdmmc_get_cached_rsp(storage->sdmmc, &tmp, SDMMC_RSP_TYPE_1);
+	if (_sd_storage_execute_app_cmd(storage, R1_STATE_TRAN, 0, &cmdbuf, &reqbuf, NULL))
+		return 1;
 
 	// Convert buffer to LE.
 	for (u32 i = 0; i < SDMMC_CMD_BLOCKSIZE; i += 4)
@@ -1709,7 +1906,7 @@ int sd_storage_get_ssr(sdmmc_storage_t *storage, u8 *buf)
 
 	_sd_storage_parse_ssr(storage);
 
-	return _sdmmc_storage_check_card_status(tmp);
+	return _sdmmc_storage_check_cached_card_status(storage->sdmmc);
 }
 
 static void _sd_storage_parse_cid(sdmmc_storage_t *storage)
@@ -1730,6 +1927,7 @@ static void _sd_storage_parse_cid(sdmmc_storage_t *storage)
 	storage->cid.hwrev        = unstuff_bits(raw_cid, 60,  4);
 	storage->cid.fwrev        = unstuff_bits(raw_cid, 56,  4);
 	storage->cid.serial       = unstuff_bits(raw_cid, 24,  32);
+	storage->cid.rsvd         = unstuff_bits(raw_cid, 20,  4);
 	storage->cid.year         = unstuff_bits(raw_cid, 12,  8) + 2000;
 	storage->cid.month        = unstuff_bits(raw_cid, 8,   4);
 }
@@ -1767,7 +1965,7 @@ static void _sd_storage_parse_csd(sdmmc_storage_t *storage)
 	storage->sec_cnt = storage->csd.capacity;
 }
 
-static bool _sdmmc_storage_get_bus_uhs_support(u32 bus_width, u32 type)
+static bool _sd_storage_get_bus_uhs_support(u32 bus_width, u32 type)
 {
 	switch (type)
 	{
@@ -1795,10 +1993,8 @@ void sdmmc_storage_init_wait_sd()
 
 int sdmmc_storage_init_sd(sdmmc_storage_t *storage, sdmmc_t *sdmmc, u32 bus_width, u32 type)
 {
-	u32  tmp = 0;
-	bool is_sdsc = 0;
-	u8  *buf = (u8 *)SDMMC_UPPER_BUFFER;
-	bool bus_uhs_support = _sdmmc_storage_get_bus_uhs_support(bus_width, type);
+	bool is_sd_v1   = false;
+	bool lv_support = _sd_storage_get_bus_uhs_support(bus_width, type);
 
 	DPRINTF("[SD]-[init: bus: %d, type: %d]\n", bus_width, type);
 
@@ -1808,68 +2004,68 @@ int sdmmc_storage_init_sd(sdmmc_storage_t *storage, sdmmc_t *sdmmc, u32 bus_widt
 	memset(storage, 0, sizeof(sdmmc_storage_t));
 	storage->sdmmc = sdmmc;
 
-	if (!sdmmc_init(sdmmc, SDMMC_1, SDMMC_POWER_3_3, SDMMC_BUS_WIDTH_1, SDHCI_TIMING_SD_ID))
-		return 0;
+	if (sdmmc_init(sdmmc, SDMMC_1, SDMMC_POWER_3_3, SDMMC_BUS_WIDTH_1, SDHCI_TIMING_SD_ID))
+		return 1;
 	DPRINTF("[SD] after init\n");
 
 	// Wait 1ms + 74 cycles.
 	usleep(1000 + (74 * 1000 + sdmmc->card_clock - 1) / sdmmc->card_clock);
 
-	if (!_sdmmc_storage_go_idle_state(storage))
-		return 0;
+	if (_sdmmc_storage_go_idle_state(storage))
+		return 1;
 	DPRINTF("[SD] went to idle state\n");
 
-	if (!_sd_storage_send_if_cond(storage, &is_sdsc))
-		return 0;
-	DPRINTF("[SD] after send if cond\n");
+	if (_sd_storage_send_if_cond(storage, &is_sd_v1))
+		return 1;
+	DPRINTF("[SD] sent if cond\n");
 
-	if (!_sd_storage_get_op_cond(storage, is_sdsc, bus_uhs_support))
-		return 0;
+	if (_sd_storage_get_op_cond(storage, is_sd_v1, lv_support))
+		return 1;
 	DPRINTF("[SD] got op cond\n");
 
-	if (!_sdmmc_storage_get_cid(storage))
-		return 0;
+	if (_sdmmc_storage_get_cid(storage))
+		return 1;
 	DPRINTF("[SD] got cid\n");
 	_sd_storage_parse_cid(storage);
 
-	if (!_sd_storage_get_rca(storage))
-		return 0;
+	if (_sd_storage_get_rca(storage))
+		return 1;
 	DPRINTF("[SD] got rca (= %04X)\n", storage->rca);
 
-	if (!_sdmmc_storage_get_csd(storage))
-		return 0;
+	if (_sdmmc_storage_get_csd(storage))
+		return 1;
 	DPRINTF("[SD] got csd\n");
 	_sd_storage_parse_csd(storage);
 
 	if (!storage->is_low_voltage)
 	{
-		if (!sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_SD_DS12))
-			return 0;
-		DPRINTF("[SD] after setup default clock\n");
+		if (sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_SD_DS12))
+			return 1;
+		DPRINTF("[SD] after setup default hs clock\n");
 	}
 
-	if (!_sdmmc_storage_select_card(storage))
-		return 0;
+	if (_sdmmc_storage_select_card(storage))
+		return 1;
 	DPRINTF("[SD] card selected\n");
 
-	if (!_sdmmc_storage_set_blocklen(storage, SD_BLOCKSIZE))
-		return 0;
+	if (_sdmmc_storage_set_blocklen(storage, SD_BLOCKSIZE))
+		return 1;
 	DPRINTF("[SD] set blocklen to SD_BLOCKSIZE\n");
 
 	// Disconnect Card Detect resistor from DAT3.
-	if (!_sd_storage_execute_app_cmd_type1(storage, &tmp, SD_APP_SET_CLR_CARD_DETECT, 0, 0, R1_STATE_TRAN))
-		return 0;
+	if (_sd_storage_execute_app_cmd_tran(storage, SD_APP_SET_CLR_CARD_DETECT, 0))
+		return 1;
 	DPRINTF("[SD] cleared card detect\n");
 
-	if (!sd_storage_get_scr(storage, buf))
-		return 0;
+	if (sd_storage_get_scr(storage))
+		return 1;
 	DPRINTF("[SD] got scr\n");
 
 	// If card supports a wider bus and if it's not SD Version 1.0 switch bus width.
 	if (bus_width == SDMMC_BUS_WIDTH_4 && (storage->scr.bus_widths & BIT(SD_BUS_WIDTH_4)) && storage->scr.sda_vsn)
 	{
-		if (!_sd_storage_execute_app_cmd_type1(storage, &tmp, SD_APP_SET_BUS_WIDTH, SD_BUS_WIDTH_4, 0, R1_STATE_TRAN))
-			return 0;
+		if (_sd_storage_execute_app_cmd_tran(storage, SD_APP_SET_BUS_WIDTH, SD_BUS_WIDTH_4))
+			return 1;
 
 		sdmmc_set_bus_width(storage->sdmmc, SDMMC_BUS_WIDTH_4);
 		DPRINTF("[SD] switched to wide bus width\n");
@@ -1882,14 +2078,14 @@ int sdmmc_storage_init_sd(sdmmc_storage_t *storage, sdmmc_t *sdmmc, u32 bus_widt
 
 	if (storage->is_low_voltage)
 	{
-		if (!_sd_storage_enable_uhs_low_volt(storage, type, buf))
-			return 0;
+		if (_sd_storage_set_uhs_bus_speed(storage, type))
+			return 1;
 		DPRINTF("[SD] enabled UHS\n");
 	}
-	else if (type != SDHCI_TIMING_SD_DS12 && storage->scr.sda_vsn) // Not default speed and not SD Version 1.0.
+	else if (type != SDHCI_TIMING_SD_DS12 && storage->scr.sda_vsn) // Not default HS speed and not SD Version 1.0.
 	{
-		if (!_sd_storage_enable_hs_high_volt(storage, buf))
-			return 0;
+		if (_sd_storage_set_hs25_bus_speed(storage))
+			return 1;
 
 		DPRINTF("[SD] enabled HS\n");
 		switch (bus_width)
@@ -1905,7 +2101,7 @@ int sdmmc_storage_init_sd(sdmmc_storage_t *storage, sdmmc_t *sdmmc, u32 bus_widt
 	}
 
 	// Parse additional card info from sd status.
-	if (sd_storage_get_ssr(storage, buf))
+	if (!sd_storage_get_ssr(storage))
 	{
 		DPRINTF("[SD] got sd status\n");
 	}
@@ -1914,7 +2110,7 @@ int sdmmc_storage_init_sd(sdmmc_storage_t *storage, sdmmc_t *sdmmc, u32 bus_widt
 
 	storage->initialized = 1;
 
-	return 1;
+	return 0;
 }
 
 /*
@@ -1925,7 +2121,7 @@ int _gc_storage_custom_cmd(sdmmc_storage_t *storage, void *buf)
 {
 	u32 resp;
 	sdmmc_cmd_t cmdbuf;
-	sdmmc_init_cmd(&cmdbuf, MMC_VENDOR_60_CMD, 0, SDMMC_RSP_TYPE_1, 1);
+	sdmmc_init_cmd(&cmdbuf, MMC_VENDOR_CMD_60, 0, SDMMC_RSP_TYPE_1, 1);
 
 	sdmmc_req_t reqbuf;
 	reqbuf.buf              = buf;
@@ -1935,16 +2131,15 @@ int _gc_storage_custom_cmd(sdmmc_storage_t *storage, void *buf)
 	reqbuf.is_multi_block   = 0;
 	reqbuf.is_auto_stop_trn = 0;
 
-	if (!sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
+	if (sdmmc_execute_cmd(storage->sdmmc, &cmdbuf, &reqbuf, NULL))
 	{
 		sdmmc_stop_transmission(storage->sdmmc, &resp);
-		return 0;
+		return 1;
 	}
 
-	if (!sdmmc_get_cached_rsp(storage->sdmmc, &resp, SDMMC_RSP_TYPE_1))
-		return 0;
-	if (!_sdmmc_storage_check_card_status(resp))
-		return 0;
+	if (_sdmmc_storage_check_cached_card_status(storage->sdmmc))
+		return 1;
+
 	return _sdmmc_storage_check_status(storage);
 }
 
@@ -1953,20 +2148,20 @@ int sdmmc_storage_init_gc(sdmmc_storage_t *storage, sdmmc_t *sdmmc)
 	memset(storage, 0, sizeof(sdmmc_storage_t));
 	storage->sdmmc = sdmmc;
 
-	if (!sdmmc_init(sdmmc, SDMMC_2, SDMMC_POWER_1_8, SDMMC_BUS_WIDTH_8, SDHCI_TIMING_MMC_HS100))
-		return 0;
+	if (sdmmc_init(sdmmc, SDMMC_2, SDMMC_POWER_1_8, SDMMC_BUS_WIDTH_8, SDHCI_TIMING_MMC_HS100))
+		return 1;
 	DPRINTF("[GC] after init\n");
 
 	// Wait 1ms + 10 clock cycles.
 	usleep(1000 + (10 * 1000 + sdmmc->card_clock - 1) / sdmmc->card_clock);
 
-	if (!sdmmc_tuning_execute(storage->sdmmc, SDHCI_TIMING_MMC_HS100, MMC_SEND_TUNING_BLOCK_HS200))
-		return 0;
+	if (sdmmc_tuning_execute(storage->sdmmc, SDHCI_TIMING_MMC_HS100, MMC_SEND_TUNING_BLOCK_HS200))
+		return 1;
 	DPRINTF("[GC] after tuning\n");
 
 	sdmmc_card_clock_powersave(sdmmc, SDMMC_POWER_SAVE_ENABLE);
 
 	storage->initialized = 1;
 
-	return 1;
+	return 0;
 }
