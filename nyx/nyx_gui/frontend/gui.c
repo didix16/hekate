@@ -801,7 +801,7 @@ lv_res_t mbox_konami_action(lv_obj_t *btns, const char *txt)
 	if(res){
 		lv_obj_t *dark_bg = lv_obj_get_parent(mbox);
 		lv_obj_del(dark_bg); // Deletes children also (mbox).
-		reload_nyx();
+		reload_nyx(NULL, true);
 		return LV_RES_INV;
 	}else {
 		static const char * mbox_btn_map[] = {"\251", "\222OK!", "\251", ""};
